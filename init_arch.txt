@@ -1,0 +1,178 @@
+아키텍처는 느슨하게 결합된 마이크로서비스(Decoupled Microservices) 형태로 구성되어, 각 모듈의 부하를 독립적으로 관리하고 확장성을 극대화합니다.구체적인 시스템 아키텍처 구상과 **개발 지침(Instructions)**을 단계별로 제공합니다.1. ⚙️ 시스템 아키텍처 개요 (Redis Streams Backbone)모듈기술 스택기능입력 Stream출력 StreamCollectorPython (API, Redis)API에서 원본 데이터 수신 및 Stream 적재-RAW_DATA_STREAMFeature ProcessorPython (Redis, Pandas)Tick $\rightarrow$ OFI, 유동성 점수, 1분봉 Feature 계산RAW_DATA_STREAMFEATURE_STREAMDB LoggerPython (Redis, ClickHouse)배치 처리로 ClickHouse에 모든 데이터 적재FEATURE_STREAM-Prediction EnginePython/PyTorch (GPU)딥러닝 모델 실시간 추론 ($P(\text{Up})$)FEATURE_STREAMPREDICTION_STREAMStrategy ManagerPython (Redis, Order API)모드 A/B 전환 로직, 유동성 필터 적용, 주문 실행FEATURE_STREAM, PREDICTION_STREAMORDER_COMMAND_STREAM2. 🗃️ Redis Streams 구조 정의시스템의 모든 데이터는 아래 세 가지 스트림을 통해 흘러가며, 각 모듈은 **XREADGROUP**을 사용하여 안전하게 데이터를 소비합니다.Stream ID목적데이터 형식 (Key:Value)RAW_DATA_STREAMAPI에서 수신한 원본 데이터 저장 (Tick, L5 호가, OI)symbol: 'KRW-BTC', bid_price_1: 350.5, tick_volume: 50FEATURE_STREAM전처리된 Feature 저장 (딥러닝 및 로직의 주요 입력)symbol: 'KRW-BTC', ofi_z: 1.25, liquidity_score: 85, 1m_rsi: 72.3PREDICTION_STREAM모델의 실시간 예측 결과symbol: 'KRW-BTC', Up_Prob: 0.88, Mode: 'B', Model_Version: 'v3.1'3. 💻 개발 지침: 모듈별 구현 로직 (Python/Claude Code)A. [모듈 1] Data Collector: API $\rightarrow$ RAW_DATA_STREAM핵심: 낮은 레이턴시로 Redis에 데이터 적재 (XADD)API에서 수신되는 Tick, 호가 데이터(L5 이상), 미결제약정 데이터를 즉시 JSON 또는 CSV 형태의 문자열로 변환하여 Redis Stream에 추가합니다.Pythonimport redis
+import json
+import time
+
+# Redis 설정
+r = redis.Redis(decode_responses=True)
+RAW_STREAM = 'RAW_DATA_STREAM'
+
+def publish_raw_data(data):
+    """
+    API 콜백 함수에 연결되어 실시간으로 데이터를 Stream에 추가
+    """
+    try:
+        # data는 API로부터 받은 틱/호가 정보 딕셔너리
+        r.xadd(
+            RAW_STREAM, 
+            {'timestamp': time.time(), 'data_json': json.dumps(data)}, 
+            maxlen=10000,  # 메모리 관리를 위해 최대 길이 설정 (FIFO)
+            limit=False
+        )
+    except Exception as e:
+        print(f"Error publishing to Redis: {e}")
+
+# (주: API에서 콜백 함수가 호출될 때마다 publish_raw_data가 실행되어야 함)
+B. [모듈 2] Feature Processor: RAW_DATA_STREAM $\rightarrow$ FEATURE_STREAM핵심: 상태 저장(Stateful) 및 OFI, 유동성 점수 계산이 모듈은 RAW_DATA_STREAM을 소비하며, 이전 틱의 호가 정보를 기억해야 OFI를 계산할 수 있습니다. 계산된 OFI, 유동성 점수 등을 FEATURE_STREAM으로 보냅니다.Python# OFICalculator 클래스는 이전 답변에서 정의된 것을 사용
+from .ofi_calculator import OFICalculator 
+
+r = redis.Redis(decode_responses=True)
+RAW_STREAM = 'RAW_DATA_STREAM'
+FEATURE_STREAM = 'FEATURE_STREAM'
+OFI_CALCULATORS = {} # 종목별 OFI 상태 저장
+
+def process_raw_data():
+    # Consumer Group 설정 (재시작 시 미처리 메시지 처리 보장)
+    group_name = 'feature_processor_group'
+    # ... Stream 읽기 로직 (XREADGROUP) 구현 ...
+
+    for message in new_messages:
+        data = json.loads(message['data_json'])
+        symbol = data['symbol']
+        
+        if symbol not in OFI_CALCULATORS:
+            OFI_CALCULATORS[symbol] = OFICalculator()
+
+        # 1. OFI 계산
+        current_ofi = OFI_CALCULATORS[symbol].calculate_tick_ofi(
+            data['bid_price_1'], data['bid_qty_1'], 
+            data['ask_price_1'], data['ask_qty_1']
+        )
+        
+        # 2. 유동성 점수 계산 (예: 5호가 잔량 합 / 스프레드)
+        liquidity_score = calculate_liquidity_score(data)
+        
+        # 3. 누적/집계 (1분봉, 5분봉 Feature 생성)
+        # 이 부분은 별도의 Time-Series Aggregator 로직 필요 (예: Pandas T/A)
+        
+        # 4. FEATURE_STREAM에 전송
+        r.xadd(FEATURE_STREAM, {
+            'symbol': symbol,
+            'timestamp': data['timestamp'],
+            'ofi_z_score': normalize_ofi(current_ofi), # Z-Score 정규화 로직 적용
+            'liquidity_score': liquidity_score
+            # ... 그 외 1분봉 Feature들 ...
+        })
+        # ... 처리 완료 ACK (XACK) 전송 ...
+C. [모듈 3] DB Logger: FEATURE_STREAM $\rightarrow$ ClickHouse핵심: 배치 삽입 (Batch Insert)하나의 메시지마다 ClickHouse에 삽입하면 성능이 급격히 저하됩니다. Stream에서 100~1000개 데이터를 **배치(Batch)**로 읽어 모은 후, 한 번에 삽입해야 ClickHouse의 장점을 살릴 수 있습니다.Pythonfrom clickhouse_connect import get_client
+# ... Redis 설정 ...
+
+CH_CLIENT = get_client(host='your_ch_host', database='trading_db')
+FEATURE_STREAM = 'FEATURE_STREAM'
+
+def batch_insert_to_clickhouse():
+    # Consumer Group 설정 (Logger)
+    # ... XREADGROUP으로 1000개씩 읽어오기 ...
+    
+    records_to_insert = []
+    
+    for message in messages:
+        # 메시지 파싱 및 데이터 추출
+        features = message['features'] # FEATURE_STREAM에서 받은 데이터
+        records_to_insert.append(features)
+
+    if records_to_insert:
+        # ClickHouse의 insert 헬퍼 함수를 사용해 대량 삽입
+        CH_CLIENT.insert(
+            'features_1min_table', 
+            records_to_insert, 
+            column_names=['timestamp', 'symbol', 'ofi_z_score', 'liquidity_score', '...']
+        )
+        # ... 처리 완료 ACK (XACK) 전송 ...
+
+# (주: 이 함수는 일정 시간(예: 1초)마다 실행되거나, 배치 사이즈(예: 1000건)가 찰 때마다 실행되도록 루프를 구성해야 함)
+D. [모듈 4] Prediction Engine: FEATURE_STREAM $\rightarrow$ PREDICTION_STREAM핵심: GPU 활용 및 낮은 지연 시간(Latency) 추론미리 학습된 PyTorch 모델을 GPU 메모리에 로드하고, FEATURE_STREAM에서 새로운 데이터가 들어올 때마다 모델을 실행합니다.Pythonimport torch
+# ... Redis, DL Model 설정 ...
+# DL_MODEL은 사전에 저장된 .pth 파일 등에서 로드 (cuda/gpu로 매핑)
+DL_MODEL.eval() 
+
+def run_prediction_engine():
+    # ... FEATURE_STREAM 읽기 (XREADGROUP) ...
+    
+    for message in messages:
+        # 1. 시계열 데이터 구성 (Lookback Window)
+        # ClickHouse에서 최근 N분치 데이터(Feature)를 불러와 시퀀스를 완성해야 함 (단, 지연 시간 최소화)
+        # OR: Feature Processor가 Lookback Window를 Redis에 Rolling Set으로 유지
+
+        current_sequence = load_sequence_data(symbol, N=60) # N=60 (60분 Lookback)
+        
+        # 2. Tensor 변환 및 GPU 이동
+        input_tensor = torch.tensor(current_sequence).float().unsqueeze(0).to('cuda')
+        
+        # 3. 추론 실행 (torch.no_grad() 필수)
+        with torch.no_grad():
+            output = DL_MODEL(input_tensor)
+            probabilities = torch.exp(output).cpu().numpy()[0]
+            
+        up_prob = probabilities[1] # Class 1: Buy
+        down_prob = probabilities[2] # Class 2: Sell
+
+        # 4. PREDICTION_STREAM에 결과 전송
+        r.xadd('PREDICTION_STREAM', {
+            'symbol': symbol,
+            'Up_Prob': up_prob,
+            'Down_Prob': down_prob,
+            'Decision_Time': time.time()
+        })
+        # ... XACK 전송 ...
+E. [모듈 5] Strategy Manager: 통합 의사결정 및 주문 실행핵심: 이원화 전략 (Mode A/B) 및 필터링FEATURE_STREAM (유동성 정보)과 PREDICTION_STREAM (예측 정보)을 동시에 소비하여 주문 결정을 내립니다.Python# ... Redis 설정 ...
+
+def run_strategy_manager():
+    # 1. 두 개의 Consumer Group을 사용하여 FEATURE와 PREDICTION을 각각 읽음
+    # (실제로는 하나의 루프에서 둘 다 읽되, 타임스탬프를 매칭하여 사용)
+    
+    for feature_msg, prediction_msg in matched_messages:
+        symbol = feature_msg['symbol']
+        
+        # 유동성 필터 데이터
+        liquidity_score = feature_msg['liquidity_score']
+        basis_gap = feature_msg['basis_gap']
+        
+        # 딥러닝 예측 데이터
+        up_prob = prediction_msg['Up_Prob']
+        
+        # --- [로직 시작] ---
+        
+        # [Step 1] 모드 A (스나이퍼 차익거래) 체크 (최우선)
+        if (liquidity_score > 80) and (basis_gap > THRESHOLD_2_5_SIGMA):
+            if up_prob > 0.65:
+                # 조건: 유동성 풍부 + 괴리 확대 + 모델 상승 예측
+                issue_order(symbol, 'BUY_ARBITRAGE', 'LIMIT', order_size=5.0) # 고비중
+                print(f"{symbol}: 모드 A - 스나이퍼 매수 차익거래 진입")
+                continue # 다음 메시지로 이동
+
+        # [Step 2] 회피/안전 구간 체크
+        if liquidity_score < 50: # 유동성이 너무 낮음 (청산 불가 위험)
+            # 모든 포지션 청산 명령 또는 신규 진입 금지
+            print(f"{symbol}: 유동성 회피 구간. 거래 정지.")
+            continue
+            
+        # [Step 3] 모드 B (딥러닝 추세 매매) 체크
+        if (basis_gap < THRESHOLD_1_SIGMA) or (liquidity_score > 50): # 차익 기회가 없거나 안전할 때
+            if up_prob > 0.85:
+                # 조건: 높은 신뢰도의 상승 예측
+                issue_order(symbol, 'BUY_DIRECTIONAL', 'LIMIT', order_size=1.0) # 저비중
+                print(f"{symbol}: 모드 B - 딥러닝 추세 매수 진입")
+            elif up_prob < 0.15:
+                # 조건: 높은 신뢰도의 하락 예측
+                issue_order(symbol, 'SELL_DIRECTIONAL', 'LIMIT', order_size=1.0)
+                print(f"{symbol}: 모드 B - 딥러닝 추세 매도 진입")
+
+        # ... XACK 전송 ...
+
+def issue_order(symbol, strategy_id, order_type, order_size):
+    """
+    실제 주문 API로 명령을 전달하는 함수 (별도 Order API 통신 로직 필요)
+    """
+    # ... 실제 주문 로직 ...
+    pass
+4. 🚀 개발 및 운영 환경 설정 가이드① 인프라 구축ClickHouse: 데이터 저장 및 장기 Feature 조회용 서버 구축 (가급적 SSD).Redis Server: Stream 기능을 활성화하고 충분한 메모리를 확보.GPU 서버: PyTorch 및 CUDA 환경 설정. Prediction Engine 모듈만 여기서 구동.로컬/AWS/GCP (CPU): Collector, Processor, Logger, Strategy Manager 등 나머지 모듈 구동.② 개발 시 유의 사항재시작 및 Failover: 모든 모듈은 Redis Consumer Group을 사용하므로, 모듈이 다운되더라도 재시작 시 **이전에 처리하지 못한 메시지(Pending Entries List, PEL)**부터 안전하게 이어서 처리할 수 있도록 코드를 작성해야 합니다.시퀀스 구성: Prediction Engine이 딥러닝 모델에 넣을 과거 60분치 데이터 시퀀스를 구성하는 것이 가장 까다롭습니다.옵션 1: ClickHouse에 쿼리하여 가져온다 (지연 시간 높음).옵션 2 (권장): Feature Processor 모듈에서 각 종목별로 Rolling Window 데이터를 Redis의 Sorted Set이나 List로 60개씩 유지하여, Prediction Engine이 Redis에서 빠르게 시퀀스를 읽어오도록 설계합니다.수수료/슬리피지: 모든 백테스팅 및 실전 운영 시, 수수료와 슬리피지를 엄격하게 적용하여 수익성이 나는지 지속적으로 검증해야 합니다.

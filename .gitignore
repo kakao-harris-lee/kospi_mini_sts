@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.history/
+
+# Environment
+.env
+*.env.local
+
+# Logs
+logs/
+*.log
+
+# Cache
+.token_cache.json
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (large)
+*.csv
+*.zip
+*.parquet
+keggle/
+
+# Secrets
+credentials.json
+secrets.json

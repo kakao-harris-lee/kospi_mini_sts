@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # Redis - Stream Backbone
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # ClickHouse - 데이터 저장소
+  # ============================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: trading-clickhouse
+    ports:
+      - "8123:8123"  # HTTP
+      - "9000:9000"  # Native
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    environment:
+      - CLICKHOUSE_DB=trading_db
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # Redis Insight - Redis 모니터링 (선택)
+  # ============================================================
+  redis-insight:
+    image: redislabs/redisinsight:latest
+    container_name: trading-redis-insight
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:
+  clickhouse_data:
+  clickhouse_logs:

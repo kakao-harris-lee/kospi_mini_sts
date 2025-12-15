@@ -1,0 +1,8 @@
+redis
+requests
+websocket-client
+loguru
+fastapi
+uvicorn[standard]
+python-dotenv
+psycopg2-binary
