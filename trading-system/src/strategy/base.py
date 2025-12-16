@@ -49,6 +49,7 @@ class BarData:
 
     # 마이크로스트럭처 (옵션)
     ofi: float = 0.0
+    ofi_zscore: float = 0.0  # OFI Z-Score
     bid_ask_imbalance: float = 0.0
     spread: float = 0.0
     buy_volume_ratio: float = 0.5
@@ -75,6 +76,7 @@ class BarData:
             close=data.get('close', 0),
             volume=data.get('volume', 0),
             ofi=data.get('ofi', 0),
+            ofi_zscore=data.get('ofi_zscore', 0),
             bid_ask_imbalance=data.get('bid_ask_imbalance', 0),
             spread=data.get('spread', 0),
             buy_volume_ratio=data.get('buy_volume_ratio', 0.5),

@@ -38,6 +38,15 @@ from .filters import (
     TradingHoursConfig,
     OptionsExpiryFilter,
 )
+from .feature_engineer import (
+    FeatureEngineer,
+    FeatureConfig,
+    prepare_backtest_data,
+)
+from .strategy_adapter import (
+    StrategyAdapter,
+    create_backtest_strategy,
+)
 
 __all__ = [
     # Engine
@@ -66,4 +75,11 @@ __all__ = [
     'TradingHoursFilter',
     'TradingHoursConfig',
     'OptionsExpiryFilter',
+    # Feature Engineering
+    'FeatureEngineer',
+    'FeatureConfig',
+    'prepare_backtest_data',
+    # Strategy Adapter
+    'StrategyAdapter',
+    'create_backtest_strategy',
 ]
