@@ -200,107 +200,155 @@ ORDER BY (code, datetime);
 - [x] Strategy Manager (Mode A/B 이원화)
 - [x] 통합 테스트 (DryRun 모드)
 
-### Phase 3 🔄 진행 중
+### Phase 3 ✅ 완료
 **실시간 데이터 수집 및 주문 연동**
 
-- [ ] 한투 실시간 WebSocket 어댑터 연동
+- [x] 한투 실시간 WebSocket 어댑터 연동
   - 호가 수신: `H0IFASP0`
   - 체결 수신: `H0IFCNT0`
-- [ ] KOSPI Mini 실시간 호가/체결 수신
-- [ ] 한투 주문 API 연동
+- [x] KOSPI Mini 실시간 호가/체결 수신
+- [x] 한투 주문 API 연동 (`src/collector/kis_order.py`)
   - 시장가/지정가 주문
   - 주문 취소/정정
 
-### Phase 4
+### Phase 4 ✅ 완료
 **백테스팅 및 리스크 관리**
 
-- [ ] 모의투자 백테스팅 시스템
-  - 수수료/슬리피지 반영
-  - 틱 단위 시뮬레이션
-- [ ] 포지션 관리
-  - 실시간 포지션 추적
-  - 평균 진입가 계산
-- [ ] 손절/익절, 리스크 관리
+- [x] 백테스트 엔진 (`src/backtest/engine.py`)
+  - 1분 단위 이벤트 루프
+  - 슬리피지/수수료 모델
+- [x] 포지션 관리 (`src/backtest/position.py`)
+  - 상태 머신: FLAT → LONG/SHORT → FLAT
+  - 거래 통계 (승률, Profit Factor)
+- [x] 리스크 관리 (`src/backtest/risk.py`)
   - Stop Loss / Take Profit
-  - 최대 손실 한도
-  - 포지션 사이징
+  - 시간 손절, 트레일링 스탑
+  - 일일 최대 손실/거래 횟수 제한
+- [x] 거래 시간 필터 (`src/backtest/filters.py`)
 
-#### 리스크 관리 (수익률 80% 결정 요소)
-| 항목 | 설명 |
-|------|------|
-| 포지션 사이즈 | 계좌 대비 최대 노출 비율 |
-| 손절 규칙 | 가격 기반 Stop Loss |
-| 시간 손절 | N분 경과 시 강제 청산 |
-
-#### 거래하지 않는 규칙 ✅
-| 구간 | 이유 |
-|------|------|
-| 노이즈 구간 | 변동성 낮고 방향성 없음 |
-| 점심 시간 (11:30~13:00) | 거래량 급감 |
-| 이벤트 직전 | FOMC, 금통위, 옵션만기 등 |
-
-#### 백테스트 엔진 필수 기능
-```
-┌─────────────────────────────────────────────────────────┐
-│  백테스트 엔진 구조                                      │
-├─────────────────────────────────────────────────────────┤
-│  • 1분 단위 이벤트 루프                                  │
-│  • 슬리피지 모델 (틱 단위 보정)                          │
-│  • 수수료 모델 (왕복 수수료 반영)                        │
-│  • 부분 체결 가정 ❌ → 단일 체결 가정 ⭕                 │
-│  • 포지션 상태 머신 (FLAT → LONG/SHORT → FLAT)          │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Phase 5
+### Phase 5 ✅ 완료
 **로지컬 전략 구현**
 
-#### 핵심 철학
-> **가격을 예측하지 말고, 시장 참가자의 행동을 따라간다 (지연 최소화)**
+- [x] 전략 베이스 클래스 (`src/strategy/base.py`)
+- [x] 변동성 레짐 판단기 (`src/strategy/regime_detector.py`)
+- [x] 마이크로스트럭처 시그널 (`src/strategy/signals/`)
+- [x] 전략 구현 (`src/strategy/strategies/`)
+  - MeanReversionStrategy (저변동성 역추세)
+  - BreakoutStrategy (고변동성 돌파)
+  - OFIMomentumStrategy (OFI 모멘텀)
+  - HybridStrategy (LSTM + 로지컬)
 
-#### 마이크로스트럭처 시그널
-| 시그널 | 설명 | 활용 |
-|--------|------|------|
-| OFI (Order Flow Imbalance) | 호가 변화 기반 매수/매도 압력 | 단기 방향성 |
-| 호가 잔량 변화 | Bid/Ask 수량 변화 | 지지/저항 강도 |
-| 체결 속도 | 틱 빈도 변화 | 모멘텀 감지 |
-| 스프레드 변화 | Bid-Ask 스프레드 | 유동성 상태 |
+### Phase 7 🔄 진행 중
+**모의투자 & 백테스팅 상시 운영 시스템**
 
-#### 변동성 레짐 기반 전략
+#### 목표
+- CLI 기반 백테스트/모의투자 실행
+- 성과 기록 및 리포트 자동 생성
+- 스케줄러를 통한 자동 실행
+
+#### 아키텍처
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    변동성 레짐 판단                      │
-│                          │                              │
-│         Low Vol ─────────┼───────── High Vol            │
-│            │             │             │                │
-│            ▼             ▼             ▼                │
-│     Mean Reversion    No Trade     Breakout            │
-│     (역추세 매매)     (관망)       (추세 추종)          │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  CLI Tool ──► Execution Engine ──► Result DB (SQLite)      │
+│      │              │                    │                 │
+│      │              ├── Backtest Runner  │                 │
+│      │              ├── Paper Trading    │                 │
+│      │              └── Live Trading     │                 │
+│      │                                   │                 │
+│      └───────────► Report Generator ◄────┘                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-#### 레짐 판단 지표
-- **ATR / HV**: 변동성 수준
-- **거래량 증가율**: 시장 활성도
-- **Range Expansion**: 가격대 확장 여부
+#### 파일 구조
+```
+trading-system/
+├── cli/                      # CLI 도구
+│   ├── main.py              # 진입점 (Typer)
+│   └── commands/            # 명령어 모듈
+├── paper_trading/            # 모의투자 엔진
+│   ├── engine.py
+│   └── virtual_broker.py
+├── reporting/                # 리포트 생성
+│   └── generator.py
+├── database/                 # Result DB
+│   ├── models.py            # SQLAlchemy 모델
+│   └── repository.py        # 데이터 접근 레이어
+└── scheduler/                # 자동 실행
+    └── jobs.py
+```
 
-#### 옵션 정보 활용 (고급)
-| 지표 | 해석 |
+#### CLI 명령어
+```bash
+# 백테스트
+python -m cli backtest --strategy MeanReversion --days 30
+python -m cli backtest --strategy all --output html
+
+# 모의투자
+python -m cli paper --strategy Hybrid --duration 1d
+
+# 리포트
+python -m cli report --run-id <uuid>
+python -m cli compare --strategies MeanReversion,Breakout
+```
+
+#### Result DB 스키마 (SQLite)
+```sql
+-- 실행 기록
+CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    strategy TEXT,
+    mode TEXT,  -- backtest, paper, live
+    start_date TEXT,
+    end_date TEXT,
+    config TEXT,  -- JSON
+    created_at TEXT
+);
+
+-- 거래 기록
+CREATE TABLE trades (
+    id INTEGER PRIMARY KEY,
+    run_id TEXT,
+    timestamp TEXT,
+    side TEXT,
+    price REAL,
+    quantity INTEGER,
+    pnl REAL,
+    exit_reason TEXT
+);
+
+-- 일별 성과
+CREATE TABLE daily_metrics (
+    id INTEGER PRIMARY KEY,
+    run_id TEXT,
+    date TEXT,
+    pnl REAL,
+    trades INTEGER,
+    win_rate REAL,
+    max_drawdown REAL
+);
+```
+
+#### 스케줄 작업
+| 시간 | 작업 |
 |------|------|
-| ATM IV 상승 | 방향성 임박 |
-| Skew 변화 | 하방 리스크 증가 |
-| Put/Call Ratio | 시장 심리 |
+| 매일 16:00 | 당일 데이터 백필 + 30일 백테스트 |
+| 매주 토요일 | 전체 기간 백테스트 + 주간 리포트 |
+| 장중 (09:00~15:45) | Paper Trading 실행 |
 
 ---
 
 ## Current Status
 
-**현재 단계**: Phase 3 진행 중
+**현재 단계**: Phase 7 진행 중
 
 **완료된 작업**:
 - Phase 1: 데이터 수집 인프라 (min_data/)
 - Phase 2: 실시간 파이프라인 (trading-system/)
+- Phase 3: WebSocket + 주문 API
+- Phase 4: 백테스트 엔진 + 리스크 관리
+- Phase 5: 로지컬 전략 구현
 
 **다음 작업**:
-- 한투 WebSocket 실제 연동 테스트
-- 주문 API 구현
+- CLI Tool 구현 (Typer)
+- Result DB (SQLite) 구현
+- Paper Trading 엔진 구현

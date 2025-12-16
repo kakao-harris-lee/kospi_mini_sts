@@ -1,0 +1,421 @@
+"""
+Paper Trading Engine
+
+실시간 데이터로 전략을 실행하고 가상 주문을 처리하는 모의투자 엔진
+"""
+import asyncio
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
+
+from .virtual_broker import (
+    VirtualBroker,
+    VirtualOrder,
+    TradeRecord,
+    OrderSide,
+    OrderType,
+    PositionSide,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class PaperTradingEngine:
+    """
+    Paper Trading Engine
+
+    실시간 Redis Streams 데이터를 사용하여 전략을 실행합니다.
+    """
+
+    def __init__(
+        self,
+        strategy,
+        broker: VirtualBroker = None,
+        redis_client=None,
+        feature_stream: str = "FEATURE_STREAM",
+        run_id: str = None,
+    ):
+        """
+        :param strategy: BaseStrategy 인스턴스
+        :param broker: VirtualBroker 인스턴스 (없으면 기본값으로 생성)
+        :param redis_client: Redis 클라이언트
+        :param feature_stream: 데이터 스트림 이름
+        :param run_id: 실행 ID (DB 저장용)
+        """
+        self.strategy = strategy
+        self.broker = broker or VirtualBroker()
+        self.redis = redis_client
+        self.feature_stream = feature_stream
+        self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 상태
+        self.is_running = False
+        self.start_time: Optional[datetime] = None
+        self.end_time: Optional[datetime] = None
+        self.bars_processed = 0
+        self.signals_generated = 0
+
+        # 콜백 설정
+        self.broker.on_fill = self._on_order_fill
+        self.broker.on_trade_close = self._on_trade_close
+
+        # 히스토리
+        self.equity_history: List[Dict[str, Any]] = []
+        self.signal_history: List[Dict[str, Any]] = []
+
+    async def start(self, duration_seconds: int = None):
+        """
+        Paper Trading 시작
+
+        :param duration_seconds: 실행 시간 (초). None이면 무한 실행
+        """
+        if self.is_running:
+            logger.warning("Engine already running")
+            return
+
+        self.is_running = True
+        self.start_time = datetime.now()
+        logger.info(f"Paper Trading started at {self.start_time}")
+
+        try:
+            if duration_seconds:
+                # 시간 제한 실행
+                await asyncio.wait_for(
+                    self._run_loop(),
+                    timeout=duration_seconds,
+                )
+            else:
+                # 무한 실행
+                await self._run_loop()
+        except asyncio.TimeoutError:
+            logger.info(f"Paper Trading completed (duration: {duration_seconds}s)")
+        except asyncio.CancelledError:
+            logger.info("Paper Trading cancelled")
+        finally:
+            self.is_running = False
+            self.end_time = datetime.now()
+            await self._cleanup()
+
+    async def stop(self):
+        """Paper Trading 중지"""
+        self.is_running = False
+        logger.info("Stop signal received")
+
+    async def _run_loop(self):
+        """메인 실행 루프"""
+        if not self.redis:
+            # Redis 없으면 시뮬레이션 모드
+            logger.warning("No Redis client - running in simulation mode")
+            await self._simulation_loop()
+            return
+
+        # Consumer Group 생성
+        group_name = f"paper_{self.run_id}"
+        consumer_name = f"consumer_{self.run_id}"
+
+        try:
+            await self.redis.xgroup_create(
+                self.feature_stream, group_name, mkstream=True, id="$"
+            )
+        except Exception:
+            pass  # 이미 존재
+
+        logger.info(f"Listening to {self.feature_stream}...")
+
+        while self.is_running:
+            try:
+                # 스트림에서 데이터 읽기
+                messages = await self.redis.xreadgroup(
+                    groupname=group_name,
+                    consumername=consumer_name,
+                    streams={self.feature_stream: ">"},
+                    count=10,
+                    block=1000,
+                )
+
+                if not messages:
+                    continue
+
+                for stream_name, stream_messages in messages:
+                    for msg_id, data in stream_messages:
+                        await self._process_message(data)
+                        await self.redis.xack(self.feature_stream, group_name, msg_id)
+
+            except Exception as e:
+                logger.error(f"Error in run loop: {e}")
+                await asyncio.sleep(1)
+
+    async def _simulation_loop(self):
+        """시뮬레이션 모드 (Redis 없이)"""
+        import random
+
+        base_price = 350.0
+        while self.is_running:
+            # 가상 데이터 생성
+            price = base_price + random.uniform(-2, 2)
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "code": "101M25",
+                "close": str(price),
+                "bid": str(price - 0.05),
+                "ask": str(price + 0.05),
+                "volume": str(random.randint(100, 1000)),
+            }
+
+            await self._process_message(data)
+            await asyncio.sleep(1)
+
+    async def _process_message(self, data: Dict[str, Any]):
+        """메시지 처리"""
+        try:
+            # 데이터 파싱
+            bar_data = self._parse_bar_data(data)
+            if not bar_data:
+                return
+
+            # 가격 업데이트
+            self.broker.update_price(
+                price=bar_data['close'],
+                bid=bar_data.get('bid'),
+                ask=bar_data.get('ask'),
+            )
+
+            # 전략 시그널 생성
+            signal = self.strategy.on_bar(bar_data)
+            self.bars_processed += 1
+
+            if signal:
+                self.signals_generated += 1
+                await self._handle_signal(signal, bar_data)
+
+            # 히스토리 기록 (1분마다)
+            if self.bars_processed % 60 == 0:
+                self._record_equity()
+
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+
+    def _parse_bar_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """스트림 데이터를 BarData 형식으로 파싱"""
+        try:
+            # 문자열 -> 숫자 변환
+            def to_float(v):
+                if isinstance(v, bytes):
+                    v = v.decode()
+                return float(v) if v else 0.0
+
+            def to_int(v):
+                if isinstance(v, bytes):
+                    v = v.decode()
+                return int(float(v)) if v else 0
+
+            return {
+                'datetime': data.get('timestamp', datetime.now().isoformat()),
+                'code': data.get('code', b'').decode() if isinstance(data.get('code'), bytes) else data.get('code', ''),
+                'open': to_float(data.get('open', data.get('close'))),
+                'high': to_float(data.get('high', data.get('close'))),
+                'low': to_float(data.get('low', data.get('close'))),
+                'close': to_float(data.get('close')),
+                'volume': to_int(data.get('volume', 0)),
+                'bid': to_float(data.get('bid', data.get('close'))),
+                'ask': to_float(data.get('ask', data.get('close'))),
+                # Feature 데이터 (있는 경우)
+                'ofi': to_float(data.get('ofi', 0)),
+                'imbalance': to_float(data.get('imbalance', 0)),
+                'spread': to_float(data.get('spread', 0)),
+            }
+        except Exception as e:
+            logger.error(f"Error parsing bar data: {e}")
+            return None
+
+    async def _handle_signal(self, signal, bar_data: Dict[str, Any]):
+        """시그널 처리"""
+        from src.strategy import Signal, PositionSide as StrategyPositionSide
+
+        signal_info = {
+            'timestamp': bar_data['datetime'],
+            'signal': signal.name if hasattr(signal, 'name') else str(signal),
+            'price': bar_data['close'],
+            'position': self.broker.position.side.value,
+        }
+        self.signal_history.append(signal_info)
+
+        logger.debug(f"Signal: {signal} at price {bar_data['close']:.2f}")
+
+        # 포지션이 없을 때
+        if not self.broker.position.is_open:
+            if signal == Signal.BUY:
+                self.broker.submit_order(OrderSide.BUY, quantity=1)
+                logger.info(f"OPEN LONG at {bar_data['close']:.2f}")
+            elif signal == Signal.SELL:
+                self.broker.submit_order(OrderSide.SELL, quantity=1)
+                logger.info(f"OPEN SHORT at {bar_data['close']:.2f}")
+
+        # 롱 포지션일 때
+        elif self.broker.position.side == PositionSide.LONG:
+            if signal == Signal.SELL:
+                self.broker.close_position(reason="SIGNAL")
+                logger.info(f"CLOSE LONG at {bar_data['close']:.2f}")
+
+        # 숏 포지션일 때
+        elif self.broker.position.side == PositionSide.SHORT:
+            if signal == Signal.BUY:
+                self.broker.close_position(reason="SIGNAL")
+                logger.info(f"CLOSE SHORT at {bar_data['close']:.2f}")
+
+    def _on_order_fill(self, order: VirtualOrder):
+        """주문 체결 콜백"""
+        logger.info(
+            f"Order filled: {order.side.value} @ {order.filled_price:.2f} "
+            f"(commission: {order.commission:.0f})"
+        )
+
+    def _on_trade_close(self, trade: TradeRecord):
+        """거래 청산 콜백"""
+        pnl_color = "+" if trade.pnl_amount >= 0 else ""
+        logger.info(
+            f"Trade closed: {trade.side.value} "
+            f"{trade.entry_price:.2f} -> {trade.exit_price:.2f} "
+            f"PnL: {pnl_color}{trade.pnl_amount:,.0f} ({trade.exit_reason})"
+        )
+
+    def _record_equity(self):
+        """자산 기록"""
+        self.equity_history.append({
+            'timestamp': datetime.now().isoformat(),
+            'equity': self.broker.equity,
+            'capital': self.broker.capital,
+            'unrealized_pnl': self.broker.position.unrealized_pnl,
+        })
+
+    async def _cleanup(self):
+        """종료 정리"""
+        # 미청산 포지션 청산
+        if self.broker.position.is_open:
+            self.broker.close_position(reason="SESSION_END")
+            logger.info("Closed remaining position at session end")
+
+    def get_result(self) -> Dict[str, Any]:
+        """결과 반환"""
+        duration = (
+            (self.end_time - self.start_time).total_seconds()
+            if self.end_time and self.start_time else 0
+        )
+
+        summary = self.broker.get_summary()
+
+        return {
+            'run_id': self.run_id,
+            'strategy': self.strategy.__class__.__name__,
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+            'end_time': self.end_time.isoformat() if self.end_time else None,
+            'duration_seconds': duration,
+            'bars_processed': self.bars_processed,
+            'signals_generated': self.signals_generated,
+            **summary,
+            'trades': [
+                {
+                    'entry_time': t.entry_time.isoformat(),
+                    'exit_time': t.exit_time.isoformat() if t.exit_time else None,
+                    'side': t.side.value,
+                    'entry_price': t.entry_price,
+                    'exit_price': t.exit_price,
+                    'pnl': t.pnl,
+                    'pnl_amount': t.pnl_amount,
+                    'exit_reason': t.exit_reason,
+                }
+                for t in self.broker.trades
+            ],
+        }
+
+    def print_summary(self):
+        """결과 요약 출력"""
+        result = self.get_result()
+
+        print("\n" + "=" * 50)
+        print("Paper Trading Result")
+        print("=" * 50)
+        print(f"Strategy: {result['strategy']}")
+        print(f"Duration: {result['duration_seconds']:.0f} seconds")
+        print(f"Bars Processed: {result['bars_processed']}")
+        print(f"Signals Generated: {result['signals_generated']}")
+        print("-" * 50)
+        print(f"Initial Capital: {result['initial_capital']:,.0f} KRW")
+        print(f"Final Equity: {result['equity']:,.0f} KRW")
+        print(f"Total Return: {result['total_return']:+.2f}%")
+        print(f"Total PnL: {result['total_pnl']:+,.0f} KRW")
+        print("-" * 50)
+        print(f"Total Trades: {result['total_trades']}")
+        print(f"Winning: {result['winning_trades']}")
+        print(f"Losing: {result['losing_trades']}")
+        print(f"Win Rate: {result['win_rate']:.1f}%")
+        print("=" * 50)
+
+
+# CLI용 간단한 실행 함수
+async def run_paper_trading(
+    strategy_name: str = "hybrid",
+    duration_seconds: int = 3600,
+    initial_capital: float = 10_000_000,
+) -> Dict[str, Any]:
+    """
+    Paper Trading 실행
+
+    :param strategy_name: 전략 이름
+    :param duration_seconds: 실행 시간 (초)
+    :param initial_capital: 초기 자본
+    :return: 결과 딕셔너리
+    """
+    # 전략 로드
+    from src.strategy import (
+        MeanReversionStrategy,
+        BreakoutStrategy,
+        OFIMomentumStrategy,
+        HybridStrategy,
+    )
+
+    strategy_classes = {
+        "mean_reversion": MeanReversionStrategy,
+        "breakout": BreakoutStrategy,
+        "ofi_momentum": OFIMomentumStrategy,
+        "hybrid": HybridStrategy,
+    }
+
+    if strategy_name not in strategy_classes:
+        raise ValueError(f"Unknown strategy: {strategy_name}")
+
+    strategy = strategy_classes[strategy_name]()
+
+    # 브로커 생성
+    broker = VirtualBroker(initial_capital=initial_capital)
+
+    # Redis 클라이언트 (옵션)
+    redis_client = None
+    try:
+        import redis.asyncio as aioredis
+        redis_client = await aioredis.from_url("redis://localhost:6379")
+        await redis_client.ping()
+    except Exception:
+        logger.warning("Redis not available - running in simulation mode")
+        redis_client = None
+
+    # 엔진 생성 및 실행
+    engine = PaperTradingEngine(
+        strategy=strategy,
+        broker=broker,
+        redis_client=redis_client,
+    )
+
+    await engine.start(duration_seconds=duration_seconds)
+    engine.print_summary()
+
+    if redis_client:
+        await redis_client.close()
+
+    return engine.get_result()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_paper_trading(duration_seconds=60))
