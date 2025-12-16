@@ -1,5 +1,20 @@
 version: '3.8'
 
+# ============================================================
+# KOSPI Mini Trading System - Docker Compose
+# Phase 8.3: 컨테이너 기반 배포
+# ============================================================
+#
+# 사용법:
+#   docker-compose up -d                    # 전체 시작
+#   docker-compose up -d redis clickhouse   # 인프라만
+#   docker-compose logs -f tick-collector   # 로그 확인
+#   docker-compose down                     # 종료
+#
+# 프로파일:
+#   --profile monitoring  : Prometheus + Grafana 포함
+#   --profile dev         : 개발용 도구 (Redis Insight)
+
 services:
   # ============================================================
   # Redis - Stream Backbone
@@ -7,6 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: trading-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -17,13 +33,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - trading-net
 
   # ============================================================
   # ClickHouse - 데이터 저장소
   # ============================================================
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
+    image: clickhouse/clickhouse-server:24.3
     container_name: trading-clickhouse
+    restart: unless-stopped
     ports:
       - "8123:8123"  # HTTP
       - "9000:9000"  # Native
@@ -33,7 +52,7 @@ services:
     environment:
       - CLICKHOUSE_DB=trading_db
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
     ulimits:
       nofile:
         soft: 262144
@@ -43,19 +62,184 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - trading-net
 
   # ============================================================
-  # Redis Insight - Redis 모니터링 (선택)
+  # Tick Collector - 틱/호가 데이터 수집
+  # ============================================================
+  tick-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-tick-collector
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - KIS_APP_KEY=${KIS_APP_KEY}
+      - KIS_APP_SECRET=${KIS_APP_SECRET}
+      - KIS_MARKET=${KIS_MARKET:-real}
+      - FUTURES_CODE=${FUTURES_CODE:-}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DATABASE=trading_db
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+    command: ["python", "-m", "src.collector.tick_collector"]
+    networks:
+      - trading-net
+
+  # ============================================================
+  # Feature Processor - 피처 계산
+  # ============================================================
+  feature-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-feature-processor
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DATABASE=trading_db
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+    command: ["python", "-m", "src.processor.feature_processor"]
+    networks:
+      - trading-net
+
+  # ============================================================
+  # Strategy Manager - 전략 실행
+  # ============================================================
+  strategy-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-strategy-manager
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DATABASE=trading_db
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - DRY_RUN=${DRY_RUN:-true}
+      - STRATEGY=${STRATEGY:-pure_micro}
+      # 한투 주문 API (DRY_RUN=false일 때만 사용)
+      - KIS_APP_KEY=${KIS_APP_KEY}
+      - KIS_APP_SECRET=${KIS_APP_SECRET}
+      - KIS_ACCOUNT_NO=${KIS_ACCOUNT_NO:-}
+    command: ["python", "-m", "src.strategy.strategy_manager"]
+    networks:
+      - trading-net
+
+  # ============================================================
+  # DB Logger - ClickHouse 저장
+  # ============================================================
+  db-logger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-db-logger
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DATABASE=trading_db
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+    command: ["python", "-m", "src.db_logger.db_logger"]
+    networks:
+      - trading-net
+
+  # ============================================================
+  # Redis Insight - Redis 모니터링 (개발용)
   # ============================================================
   redis-insight:
     image: redislabs/redisinsight:latest
     container_name: trading-redis-insight
+    profiles: ["dev"]
     ports:
       - "8001:8001"
     depends_on:
       - redis
+    networks:
+      - trading-net
+
+  # ============================================================
+  # Prometheus - 메트릭 수집 (모니터링)
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: trading-prometheus
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - trading-net
+
+  # ============================================================
+  # Grafana - 대시보드 (모니터링)
+  # ============================================================
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: trading-grafana
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    networks:
+      - trading-net
 
 volumes:
   redis_data:
   clickhouse_data:
   clickhouse_logs:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  trading-net:
+    driver: bridge

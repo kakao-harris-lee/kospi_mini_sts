@@ -1,0 +1,34 @@
+# Prometheus Configuration
+# KOSPI Mini Trading System Monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Redis metrics (requires redis_exporter)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: /metrics
+
+  # ClickHouse metrics
+  - job_name: 'clickhouse'
+    static_configs:
+      - targets: ['clickhouse:8123']
+    metrics_path: /metrics
+
+  # Trading application metrics (future)
+  # - job_name: 'trading-app'
+  #   static_configs:
+  #     - targets: ['tick-collector:8080', 'strategy-manager:8080']

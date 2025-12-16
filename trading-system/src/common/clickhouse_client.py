@@ -191,6 +191,60 @@ TABLE_SCHEMAS = {
         ) ENGINE = MergeTree()
         PARTITION BY toYYYYMMDD(timestamp)
         ORDER BY (symbol, timestamp)
+    """,
+
+    # Phase 8.2: 틱/호가 데이터 수집용 테이블
+    "orderbook_snapshots": """
+        CREATE TABLE IF NOT EXISTS orderbook_snapshots (
+            timestamp DateTime64(3),
+            symbol LowCardinality(String),
+            -- 매수호가 1~5
+            bid_price_1 Float64,
+            bid_qty_1 Float64,
+            bid_price_2 Float64,
+            bid_qty_2 Float64,
+            bid_price_3 Float64,
+            bid_qty_3 Float64,
+            bid_price_4 Float64,
+            bid_qty_4 Float64,
+            bid_price_5 Float64,
+            bid_qty_5 Float64,
+            -- 매도호가 1~5
+            ask_price_1 Float64,
+            ask_qty_1 Float64,
+            ask_price_2 Float64,
+            ask_qty_2 Float64,
+            ask_price_3 Float64,
+            ask_qty_3 Float64,
+            ask_price_4 Float64,
+            ask_qty_4 Float64,
+            ask_price_5 Float64,
+            ask_qty_5 Float64,
+            -- 파생 지표
+            spread Float64,
+            mid_price Float64,
+            imbalance Float64
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, timestamp)
+        TTL timestamp + INTERVAL 90 DAY
+    """,
+
+    "trade_ticks": """
+        CREATE TABLE IF NOT EXISTS trade_ticks (
+            timestamp DateTime64(3),
+            symbol LowCardinality(String),
+            price Float64,
+            volume Float64,
+            side LowCardinality(String),  -- 'BUY' or 'SELL' (추정)
+            bid_price Float64,
+            ask_price Float64,
+            open_interest Float64,
+            cumulative_volume Float64
+        ) ENGINE = MergeTree()
+        PARTITION BY toYYYYMMDD(timestamp)
+        ORDER BY (symbol, timestamp)
+        TTL timestamp + INTERVAL 90 DAY
     """
 }
 
