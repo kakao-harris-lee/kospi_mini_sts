@@ -303,20 +303,52 @@ class StrategyManager(StreamConsumer):
             return False
 
 
+class KISOrderExecutorAdapter(BaseOrderExecutor):
+    """한투 주문 실행기 어댑터"""
+
+    def __init__(self):
+        from src.collector.kis_order import KISOrderExecutor, create_order_api_from_env
+        import os
+
+        # DRY_RUN 설정에 따라 실제 주문 여부 결정
+        dry_run = settings.dry_run
+
+        if dry_run:
+            self._executor = KISOrderExecutor(api=None, dry_run=True)
+        else:
+            try:
+                api = create_order_api_from_env()
+                self._executor = KISOrderExecutor(api=api, dry_run=False)
+                logger.info("KIS Order API initialized for LIVE trading")
+            except Exception as e:
+                logger.error(f"Failed to initialize KIS API: {e}. Falling back to DRY RUN.")
+                self._executor = KISOrderExecutor(api=None, dry_run=True)
+
+    def execute(self, order: OrderCommand) -> bool:
+        order_no = self._executor.execute(
+            symbol=order.symbol,
+            side=order.side.value.lower(),
+            size=order.size,
+            price=order.price or 0,
+            order_type="market" if order.order_type == OrderType.MARKET else "limit"
+        )
+        return order_no is not None
+
+
 def main():
     """Strategy Manager 실행"""
     logger.info("Starting Strategy Manager...")
-    
+
     # Dry Run 모드 확인
     if settings.dry_run:
         logger.warning("Running in DRY RUN mode. No real orders will be placed.")
         executor = DryRunOrderExecutor()
     else:
-        # TODO: 실제 주문 실행기 구현
-        executor = DryRunOrderExecutor()
-    
+        logger.warning("Running in LIVE mode. Real orders will be placed!")
+        executor = KISOrderExecutorAdapter()
+
     manager = StrategyManager(order_executor=executor)
-    
+
     try:
         manager.run()
     except KeyboardInterrupt:

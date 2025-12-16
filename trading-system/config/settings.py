@@ -8,6 +8,15 @@ from typing import Optional
 
 
 @dataclass
+class KISConfig:
+    """한국투자증권 API 설정"""
+    app_key: str = os.getenv("KIS_APP_KEY", "")
+    app_secret: str = os.getenv("KIS_APP_SECRET", "")
+    account_no: str = os.getenv("KIS_ACCOUNT_NO", "")
+    is_mock: bool = os.getenv("KIS_MARKET", "real") == "mock"
+
+
+@dataclass
 class RedisConfig:
     host: str = os.getenv("REDIS_HOST", "localhost")
     port: int = int(os.getenv("REDIS_PORT", "6379"))
@@ -87,15 +96,16 @@ class ConsumerGroupConfig:
 
 @dataclass
 class Settings:
+    kis: KISConfig = field(default_factory=KISConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
     clickhouse: ClickHouseConfig = field(default_factory=ClickHouseConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
-    
+
     # 로깅 레벨
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    
+
     # 운영 모드
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 
