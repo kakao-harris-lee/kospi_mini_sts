@@ -13,9 +13,23 @@ from enum import Enum
 from datetime import datetime
 
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# trading-system 루트
+TRADING_SYSTEM_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 프로젝트 루트 (kospi_mini_sts)
+PROJECT_ROOT = os.path.dirname(TRADING_SYSTEM_ROOT)
+
+if TRADING_SYSTEM_ROOT not in sys.path:
+    sys.path.insert(0, TRADING_SYSTEM_ROOT)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from src.common import setup_logging
+
+# 공유 토큰 모듈 import
+try:
+    from common.kis_token import KISToken
+except ImportError:
+    KISToken = None
 
 logger = setup_logging("kis_order")
 
@@ -100,9 +114,25 @@ class KISOrderAPI:
         self._access_token: Optional[str] = None
         self._token_expires: float = 0
 
+        # 공유 토큰 모듈 사용
+        if KISToken is not None:
+            self._shared_token = KISToken(
+                app_key=config.app_key,
+                app_secret=config.app_secret
+            )
+        else:
+            self._shared_token = None
+
     def _get_access_token(self) -> str:
-        """OAuth 액세스 토큰 발급"""
-        # 캐시된 토큰이 유효하면 재사용
+        """OAuth 액세스 토큰 발급 (공유 캐시 사용)"""
+        # 공유 토큰 모듈 사용
+        if self._shared_token:
+            token = self._shared_token.get()
+            if token:
+                return token
+            raise RuntimeError("Failed to get access token from shared cache")
+
+        # Fallback: 직접 발급
         if self._access_token and time.time() < self._token_expires - 60:
             return self._access_token
 
@@ -120,11 +150,10 @@ class KISOrderAPI:
             data = resp.json()
 
             self._access_token = data["access_token"]
-            # 토큰 만료 시간 (보통 24시간)
             expires_in = data.get("expires_in", 86400)
             self._token_expires = time.time() + expires_in
 
-            logger.info("Access token obtained")
+            logger.info("Access token obtained (direct)")
             return self._access_token
 
         except Exception as e:

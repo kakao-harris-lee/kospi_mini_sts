@@ -1,17 +1,56 @@
-"""KOSPI Mini futures code generation utilities."""
+"""KOSPI Mini futures code generation utilities.
+
+한국투자증권 API에서 지원하는 두 가지 선물 코드 형식:
+
+1. 표준 형식 (기본값):
+   - {상품코드(3자리)}{연도코드(1자리)}{월(2자리)}
+   - 예: 105X01 = 미니 KOSPI200 2026년 1월물
+   - KOSPI200 선물: 101, 미니 KOSPI200 선물: 105
+
+2. 레거시 형식 (A코드):
+   - A{상품코드(2자리)}{연도(1자리)}{월(2자리)}
+   - 예: A05601 = 미니 KOSPI200 2026년 1월물
+   - KOSPI200 선물: A01, 미니 KOSPI200 선물: A05
+
+두 형식 모두 API에서 유효하게 작동합니다.
+"""
 from datetime import date, timedelta
 from typing import List, Tuple
 from calendar import monthrange
 
 
-# 한국투자증권 API 선물 종목코드 형식:
-# A + 상품코드(2자리) + 연도(1자리) + 월(2자리)
-# 예: A05601 = 미니 KOSPI200 2026년 1월물
+# ============================================================
+# 표준 형식 (권장): 101/105 + 연도코드(알파벳) + 월(2자리)
+# ============================================================
+KOSPI200_PREFIX = "101"
+KOSPI_MINI_PREFIX = "105"
 
-# KOSPI200 선물: A01
-# 미니 KOSPI200 선물: A05
-KOSPI200_PREFIX = "A01"
-KOSPI_MINI_PREFIX = "A05"
+# 연도코드 매핑 (한투 API 기준)
+# 검증된 매핑: 101V09 = KOSPI200 2024년 9월물, 105W12 = 미니KOSPI 2025년 12월물
+YEAR_CODES = {
+    2020: 'Q',
+    2021: 'R',
+    2022: 'S',
+    2023: 'T',
+    2024: 'V',
+    2025: 'W',
+    2026: 'X',
+    2027: 'Y',
+    2028: 'Z',
+    2029: 'A',
+    2030: 'B',
+}
+
+# 역매핑 (코드 → 연도)
+CODE_TO_YEAR = {v: k for k, v in YEAR_CODES.items()}
+
+
+# ============================================================
+# 레거시 형식: A01/A05 + 연도(1자리) + 월(2자리)
+# ============================================================
+KOSPI200_LEGACY_PREFIX = "A01"
+KOSPI_MINI_LEGACY_PREFIX = "A05"
+
 
 # Mini KOSPI200 선물은 연속 6개 월물이 상장됨
 MINI_KOSPI_LISTING_MONTHS = 6
@@ -44,23 +83,57 @@ def get_expiry_date(year: int, month: int) -> date:
     return date(year, month, second_thursday)
 
 
-def make_code(year: int, month: int, prefix: str = None) -> str:
+def make_code(year: int, month: int, prefix: str = None, legacy: bool = True) -> str:
     """
     Generate futures code for Korea Investment API.
 
     Args:
         year: Full year (e.g., 2025)
         month: Month (1-12)
-        prefix: Product prefix (default: KOSPI_MINI_PREFIX)
+        prefix: Product prefix (default: KOSPI_MINI_LEGACY_PREFIX for legacy)
+        legacy: Use legacy A-code format (default: True - 더 안정적으로 작동)
 
     Returns:
-        Futures code (e.g., 'A05601' for 미니 KOSPI200 2026년 1월)
+        Futures code
+        - Legacy (기본값): 'A05601' for 미니 KOSPI200 2026년 1월물
+        - Standard: '105X01' for 미니 KOSPI200 2026년 1월물
+
+    Note:
+        레거시 형식(A05XXX)이 모든 월물에서 더 안정적으로 작동합니다.
+        표준 형식(105XXX)은 일부 월물에서 데이터가 없을 수 있습니다.
     """
+    if legacy:
+        return make_code_legacy(year, month, prefix)
+
     if prefix is None:
         prefix = KOSPI_MINI_PREFIX
 
-    # 형식: A + 상품코드(2자리) + 연도(1자리) + 월(2자리)
-    year_digit = str(year)[-1]  # 마지막 1자리 (2025 -> 5, 2026 -> 6)
+    # 형식: {상품코드(3자리)}{연도코드(1자리)}{월(2자리)}
+    year_code = YEAR_CODES.get(year)
+    if year_code is None:
+        raise ValueError(f"Unsupported year: {year}. Supported: {list(YEAR_CODES.keys())}")
+
+    month_str = f"{month:02d}"  # 2자리 월 (01, 02, ..., 12)
+    return f"{prefix}{year_code}{month_str}"
+
+
+def make_code_legacy(year: int, month: int, prefix: str = None) -> str:
+    """
+    Generate futures code using legacy A-code format.
+
+    Args:
+        year: Full year (e.g., 2025)
+        month: Month (1-12)
+        prefix: Product prefix (default: KOSPI_MINI_LEGACY_PREFIX)
+
+    Returns:
+        Legacy futures code (e.g., 'A05601' for 미니 KOSPI200 2026년 1월물)
+    """
+    if prefix is None:
+        prefix = KOSPI_MINI_LEGACY_PREFIX
+
+    # 형식: A{상품코드(2자리)}{연도(1자리)}{월(2자리)}
+    year_digit = str(year)[-1]  # 마지막 1자리 (2026 -> 6)
     month_str = f"{month:02d}"  # 2자리 월 (01, 02, ..., 12)
     return f"{prefix}{year_digit}{month_str}"
 
@@ -68,21 +141,37 @@ def make_code(year: int, month: int, prefix: str = None) -> str:
 def parse_code(code: str) -> Tuple[int, int]:
     """
     Parse futures code to year and month.
+    Supports both standard format (105X01) and legacy format (A05601).
 
     Args:
-        code: Futures code (e.g., 'A05601')
+        code: Futures code (e.g., '105X01' or 'A05601')
 
     Returns:
         Tuple of (year, month)
     """
-    # 형식: A + 상품코드(2자리) + 연도(1자리) + 월(2자리)
-    # 예: A05601 -> year_digit=6, month=01
-    year_digit = int(code[3])  # 4번째 문자 (0-indexed: 3)
-    month = int(code[4:6])  # 5-6번째 문자
+    if code.startswith('A'):
+        # 레거시 형식: A{상품코드(2자리)}{연도(1자리)}{월(2자리)}
+        # 예: A05601 -> year_digit='6', month='01'
+        year_digit = int(code[3])  # 4번째 문자
+        month_str = code[4:6]  # 5-6번째 문자
 
-    # 연도 추정 (현재 2020년대 기준)
-    current_decade = 2020
-    year = current_decade + year_digit
+        # 연도 추정 (현재 2020년대 기준)
+        current_decade = 2020
+        year = current_decade + year_digit
+
+        month = int(month_str)
+    else:
+        # 표준 형식: {상품코드(3자리)}{연도코드(1자리)}{월(2자리)}
+        # 예: 105X01 -> year_code='X', month='01'
+        year_code = code[3]  # 4번째 문자
+        month_str = code[4:6]  # 5-6번째 문자
+
+        # 연도 변환
+        year = CODE_TO_YEAR.get(year_code)
+        if year is None:
+            raise ValueError(f"Unknown year code: {year_code}")
+
+        month = int(month_str)
 
     return year, month
 

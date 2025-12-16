@@ -17,11 +17,25 @@ import requests
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# trading-system 루트
+TRADING_SYSTEM_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 프로젝트 루트 (kospi_mini_sts)
+PROJECT_ROOT = os.path.dirname(TRADING_SYSTEM_ROOT)
+
+if TRADING_SYSTEM_ROOT not in sys.path:
+    sys.path.insert(0, TRADING_SYSTEM_ROOT)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from config.settings import settings
 from src.collector.data_collector import BaseAPIAdapter, TickData
 from src.common import setup_logging
+
+# 공유 토큰 모듈 import (WebSocket은 approval_key 사용하므로 참고용)
+try:
+    from common.kis_token import KISToken
+except ImportError:
+    KISToken = None
 
 logger = setup_logging("kis_websocket")
 
