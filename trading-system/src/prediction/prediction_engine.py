@@ -42,46 +42,55 @@ logger = setup_logging("prediction")
 if TORCH_AVAILABLE:
     class TradingLSTM(nn.Module):
         """
-        LSTM 기반 가격 방향 예측 모델
+        LSTM 기반 가격 방향 예측 모델 (Attention 포함)
         입력: (batch, seq_len, features)
         출력: (batch, 3) - [Hold, Up, Down] 확률
         """
-        
+
         def __init__(
             self,
-            input_dim: int = 8,
+            input_dim: int = 10,
             hidden_dim: int = 64,
             num_layers: int = 2,
             num_classes: int = 3,
             dropout: float = 0.2
         ):
             super().__init__()
-            
+
             self.lstm = nn.LSTM(
-                input_dim, 
-                hidden_dim, 
+                input_dim,
+                hidden_dim,
                 num_layers,
                 batch_first=True,
-                dropout=dropout if num_layers > 1 else 0
+                dropout=dropout if num_layers > 1 else 0,
+                bidirectional=False
             )
-            
+
+            self.attention = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.Tanh(),
+                nn.Linear(hidden_dim // 2, 1),
+                nn.Softmax(dim=1)
+            )
+
             self.fc = nn.Sequential(
                 nn.Linear(hidden_dim, 32),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(32, num_classes)
             )
-            
-            self.softmax = nn.LogSoftmax(dim=1)
-        
+
         def forward(self, x):
             # LSTM
-            lstm_out, _ = self.lstm(x)
-            # 마지막 타임스텝만 사용
-            last_hidden = lstm_out[:, -1, :]
-            # FC
-            logits = self.fc(last_hidden)
-            return self.softmax(logits)
+            lstm_out, _ = self.lstm(x)  # (batch, seq_len, hidden)
+
+            # Attention
+            attn_weights = self.attention(lstm_out)  # (batch, seq_len, 1)
+            context = torch.sum(attn_weights * lstm_out, dim=1)  # (batch, hidden)
+
+            # Classification
+            logits = self.fc(context)
+            return logits
 
 
 @dataclass
@@ -100,43 +109,66 @@ class ModelManager:
     """
     모델 로딩 및 관리
     """
-    
+
     def __init__(self, model_path: str = None, device: str = None):
         self.model_path = model_path or settings.model.model_path
-        self.device = device or settings.model.device
+        self.device = self._resolve_device(device or settings.model.device)
         self.model = None
         self.model_version = settings.model.model_version
-        
+        self.input_dim = 10  # 기본 Feature 수
+
         if not TORCH_AVAILABLE:
             logger.warning("PyTorch not available. Using mock predictions.")
             return
-        
-        # GPU 사용 가능 여부 확인
-        if self.device == "cuda" and not torch.cuda.is_available():
+
+    def _resolve_device(self, device: str) -> str:
+        """Device 자동 선택"""
+        if device == "auto":
+            if TORCH_AVAILABLE:
+                if torch.cuda.is_available():
+                    return "cuda"
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    return "mps"
+            return "cpu"
+
+        if device == "cuda" and TORCH_AVAILABLE and not torch.cuda.is_available():
             logger.warning("CUDA not available. Falling back to CPU.")
-            self.device = "cpu"
-    
+            return "cpu"
+
+        return device
+
     def load_model(self):
         """모델 로드"""
         if not TORCH_AVAILABLE:
             return
-        
+
         try:
+            # 메타데이터 파일에서 input_dim 읽기
+            meta_path = self.model_path.replace('.pth', '.json')
+            try:
+                import json
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+                    self.input_dim = meta.get('input_dim', 10)
+                    logger.info(f"Model metadata loaded: input_dim={self.input_dim}")
+            except FileNotFoundError:
+                logger.warning(f"Model metadata not found: {meta_path}")
+
             # 모델 아키텍처 생성
-            self.model = TradingLSTM()
-            
+            self.model = TradingLSTM(input_dim=self.input_dim)
+
             # 가중치 로드 (파일이 있는 경우)
             try:
-                state_dict = torch.load(self.model_path, map_location=self.device)
+                state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)
                 self.model.load_state_dict(state_dict)
                 logger.info(f"Model loaded from {self.model_path}")
             except FileNotFoundError:
                 logger.warning(f"Model file not found: {self.model_path}. Using random weights.")
-            
+
             self.model.to(self.device)
             self.model.eval()
             logger.info(f"Model ready on {self.device}")
-            
+
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             self.model = None
@@ -176,10 +208,12 @@ class PredictionEngine(StreamConsumer):
     Prediction Engine 메인 클래스
     FEATURE_STREAM → PREDICTION_STREAM
     """
-    
+
+    # 학습 모델과 동일한 10개 feature (순서 중요!)
     FEATURE_COLUMNS = [
-        'ofi_z_score', 'ofi_cumulative', 'liquidity_score',
-        'mid_price', 'spread', 'bid_qty_total', 'ask_qty_total'
+        'returns', 'ma_ratio_5', 'ma_ratio_10', 'ma_ratio_20',
+        'rsi', 'bb_position', 'volume_ratio', 'volatility',
+        'hl_range', 'candle_body'
     ]
     
     def __init__(self):
@@ -222,23 +256,27 @@ class PredictionEngine(StreamConsumer):
     def _prepare_sequence(self, features: List[Dict]) -> Optional[np.ndarray]:
         """
         Feature 리스트를 모델 입력용 시퀀스로 변환
+        기술적 지표가 포함된 feature만 사용
         """
-        if len(features) < self.lookback:
-            logger.debug(f"Insufficient features: {len(features)} < {self.lookback}")
+        # 기술적 지표가 포함된 feature만 필터링
+        valid_features = [f for f in features if 'returns' in f]
+
+        if len(valid_features) < self.lookback:
+            logger.debug(f"Insufficient features with tech indicators: {len(valid_features)} < {self.lookback}")
             return None
-        
+
         # 최근 lookback개만 사용
-        recent = features[-self.lookback:]
-        
+        recent = valid_features[-self.lookback:]
+
         # numpy array로 변환
         sequence = []
         for f in recent:
             row = []
             for col in self.FEATURE_COLUMNS:
                 val = f.get(col, 0)
-                row.append(float(val) if val else 0.0)
+                row.append(float(val) if val is not None else 0.0)
             sequence.append(row)
-        
+
         return np.array(sequence)
     
     def process_message(self, message: StreamMessage) -> bool:

@@ -40,8 +40,8 @@ class ClickHouseConfig:
 
 @dataclass
 class ModelConfig:
-    model_path: str = os.getenv("MODEL_PATH", "models/prediction_model.pth")
-    device: str = os.getenv("MODEL_DEVICE", "cuda")  # cuda or cpu
+    model_path: str = os.getenv("MODEL_PATH", "models/trading_lstm.pth")
+    device: str = os.getenv("MODEL_DEVICE", "auto")  # cuda, mps, cpu, auto
     lookback_window: int = 60  # 60분 시퀀스
     model_version: str = "v1.0"
 

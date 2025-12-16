@@ -170,7 +170,7 @@ class CandleAggregator:
     틱 데이터를 캔들(1분봉 등)로 집계
     """
     interval_sec: int = 60  # 1분
-    
+
     # 현재 캔들 상태
     open_price: Optional[float] = None
     high_price: float = 0.0
@@ -179,11 +179,11 @@ class CandleAggregator:
     volume: float = 0.0
     tick_count: int = 0
     candle_start: float = 0.0
-    
+
     def update(self, price: float, volume: float, timestamp: float) -> Optional[Dict]:
         """
         틱으로 캔들 업데이트
-        
+
         Returns:
             완성된 캔들 (interval 경과 시) 또는 None
         """
@@ -193,14 +193,14 @@ class CandleAggregator:
             self.open_price = price
             self.high_price = price
             self.low_price = price
-        
+
         # OHLCV 업데이트
         self.high_price = max(self.high_price, price)
         self.low_price = min(self.low_price, price)
         self.close_price = price
         self.volume += volume
         self.tick_count += 1
-        
+
         # 인터벌 경과 체크
         if timestamp - self.candle_start >= self.interval_sec:
             candle = {
@@ -214,9 +214,9 @@ class CandleAggregator:
             }
             self._reset()
             return candle
-        
+
         return None
-    
+
     def _reset(self):
         self.open_price = None
         self.high_price = 0.0
@@ -226,13 +226,138 @@ class CandleAggregator:
         self.tick_count = 0
 
 
-@dataclass 
+class TechnicalIndicators:
+    """
+    기술적 지표 계산기
+    학습 모델과 동일한 10개 feature 생성
+    """
+
+    def __init__(self, lookback: int = 60):
+        self.lookback = lookback
+        self.candle_history: Deque[Dict] = deque(maxlen=lookback)
+        self.close_prices: Deque[float] = deque(maxlen=lookback)
+        self.volumes: Deque[float] = deque(maxlen=lookback)
+
+    def add_candle(self, candle: Dict):
+        """새 캔들 추가"""
+        self.candle_history.append(candle)
+        self.close_prices.append(candle['close'])
+        self.volumes.append(candle['volume'])
+
+    def calculate_features(self) -> Optional[Dict]:
+        """
+        기술적 지표 계산 (학습 모델과 동일한 10개 feature)
+        Returns None if insufficient data
+        """
+        if len(self.close_prices) < 20:
+            return None
+
+        closes = np.array(list(self.close_prices))
+        volumes = np.array(list(self.volumes))
+        candles = list(self.candle_history)
+
+        # 1. returns (수익률)
+        returns = (closes[-1] - closes[-2]) / closes[-2] if closes[-2] > 0 else 0.0
+
+        # 2-4. MA ratios (이동평균 비율)
+        ma_5 = np.mean(closes[-5:]) if len(closes) >= 5 else closes[-1]
+        ma_10 = np.mean(closes[-10:]) if len(closes) >= 10 else closes[-1]
+        ma_20 = np.mean(closes[-20:]) if len(closes) >= 20 else closes[-1]
+
+        ma_ratio_5 = closes[-1] / ma_5 if ma_5 > 0 else 1.0
+        ma_ratio_10 = closes[-1] / ma_10 if ma_10 > 0 else 1.0
+        ma_ratio_20 = closes[-1] / ma_20 if ma_20 > 0 else 1.0
+
+        # 5. RSI
+        rsi = self._calculate_rsi(closes)
+
+        # 6. Bollinger Band position
+        bb_position = self._calculate_bb_position(closes)
+
+        # 7. Volume ratio
+        avg_volume = np.mean(volumes[-20:]) if len(volumes) >= 20 else np.mean(volumes)
+        volume_ratio = volumes[-1] / avg_volume if avg_volume > 0 else 1.0
+
+        # 8. Volatility (표준편차)
+        if len(closes) >= 20:
+            returns_arr = np.diff(closes[-21:]) / closes[-21:-1]
+            volatility = np.std(returns_arr) if len(returns_arr) > 0 else 0.0
+        else:
+            volatility = 0.0
+
+        # 9. HL range (고가-저가 범위)
+        if candles:
+            latest = candles[-1]
+            hl_range = (latest['high'] - latest['low']) / latest['close'] if latest['close'] > 0 else 0.0
+        else:
+            hl_range = 0.0
+
+        # 10. Candle body (캔들 바디 크기)
+        if candles:
+            latest = candles[-1]
+            candle_body = (latest['close'] - latest['open']) / latest['open'] if latest['open'] > 0 else 0.0
+        else:
+            candle_body = 0.0
+
+        return {
+            'returns': float(returns),
+            'ma_ratio_5': float(ma_ratio_5),
+            'ma_ratio_10': float(ma_ratio_10),
+            'ma_ratio_20': float(ma_ratio_20),
+            'rsi': float(rsi),
+            'bb_position': float(bb_position),
+            'volume_ratio': float(volume_ratio),
+            'volatility': float(volatility),
+            'hl_range': float(hl_range),
+            'candle_body': float(candle_body)
+        }
+
+    def _calculate_rsi(self, closes: np.ndarray, period: int = 14) -> float:
+        """RSI 계산"""
+        if len(closes) < period + 1:
+            return 50.0  # 기본값
+
+        deltas = np.diff(closes[-(period + 1):])
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+
+        avg_gain = np.mean(gains)
+        avg_loss = np.mean(losses)
+
+        if avg_loss == 0:
+            return 100.0
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
+    def _calculate_bb_position(self, closes: np.ndarray, period: int = 20) -> float:
+        """Bollinger Band position 계산 (0-1 사이)"""
+        if len(closes) < period:
+            return 0.5  # 기본값
+
+        window = closes[-period:]
+        middle = np.mean(window)
+        std = np.std(window)
+
+        if std == 0:
+            return 0.5
+
+        upper = middle + 2 * std
+        lower = middle - 2 * std
+
+        position = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
+        return np.clip(position, 0, 1)
+
+
+@dataclass
 class SymbolState:
     """심볼별 상태 관리"""
     ofi_calc: OFICalculator = field(default_factory=OFICalculator)
     candle_1m: CandleAggregator = field(default_factory=CandleAggregator)
     candle_5m: CandleAggregator = field(default_factory=lambda: CandleAggregator(interval_sec=300))
-    
+    tech_indicators: TechnicalIndicators = field(default_factory=TechnicalIndicators)
+
     # Rolling Window for Prediction Engine (최근 60개 Feature)
     feature_window: Deque = field(default_factory=lambda: deque(maxlen=60))
 
@@ -312,7 +437,7 @@ class FeatureProcessor(StreamConsumer):
             tick_vol = float(data.get('tick_volume', 0))
             candle_1m = state.candle_1m.update(mid_price, tick_vol, timestamp)
             
-            # 4. Feature 구성
+            # 4. Feature 구성 (기본 호가 기반)
             feature = {
                 'symbol': symbol,
                 'timestamp': timestamp,
@@ -324,15 +449,20 @@ class FeatureProcessor(StreamConsumer):
                 'bid_qty_total': sum(bid_qtys),
                 'ask_qty_total': sum(ask_qtys),
             }
-            
-            # 1분봉 완성 시 추가 Feature
+
+            # 1분봉 완성 시 기술적 지표 계산 (학습 모델용 10개 feature)
             if candle_1m:
                 feature['candle_1m'] = candle_1m
-                # RSI, 변동성 등 추가 계산 가능
-            
-            # 5. Rolling Window 업데이트 (Prediction Engine용)
-            state.feature_window.append(feature)
-            self._update_rolling_window(symbol, state.feature_window)
+                state.tech_indicators.add_candle(candle_1m)
+                tech_features = state.tech_indicators.calculate_features()
+                if tech_features:
+                    feature.update(tech_features)
+                    logger.debug(f"Tech features calculated: RSI={tech_features['rsi']:.1f}")
+
+                    # 5. Rolling Window 업데이트 (Prediction Engine용)
+                    # 기술적 지표가 있는 feature만 저장 (1분봉 단위)
+                    state.feature_window.append(feature)
+                    self._update_rolling_window(symbol, state.feature_window)
             
             # 6. FEATURE_STREAM에 발행
             self.publisher.publish(feature)
