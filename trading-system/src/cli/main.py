@@ -47,7 +47,9 @@ def strategies():
         ("mean_reversion", "볼린저 밴드 기반 평균회귀", "LOW"),
         ("breakout", "N기간 고가/저가 돌파", "HIGH"),
         ("ofi_momentum", "OFI 기반 모멘텀", "ALL"),
-        ("hybrid", "LSTM + 로지컬 복합 전략", "ALL"),
+        ("hybrid", "LSTM + 로지컬 복합 전략 (deprecated)", "ALL"),
+        ("pure_micro", "순수 마이크로스트럭처 (추천)", "ALL"),
+        ("adaptive_micro", "적응형 마이크로스트럭처", "ALL"),
     ]
 
     for name, desc, regime in strategies_info:

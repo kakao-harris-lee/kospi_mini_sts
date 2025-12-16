@@ -588,5 +588,200 @@ class TestStrategyWithBacktestEngine:
         assert result.total_bars == 200
 
 
+class TestPureMicrostructureStrategy:
+    """PureMicrostructure 전략 테스트"""
+
+    def _create_bar(
+        self,
+        close: float,
+        ofi: float = 0.0,
+        ofi_zscore: float = 0.0,
+        imbalance: float = 0.0,
+        spread: float = 0.02,
+        regime: str = "MEDIUM",
+    ) -> dict:
+        return {
+            'datetime': datetime.now(),
+            'open': close,
+            'high': close + 0.1,
+            'low': close - 0.1,
+            'close': close,
+            'volume': 100,
+            'ofi': ofi,
+            'ofi_zscore': ofi_zscore,
+            'bid_ask_imbalance': imbalance,
+            'spread': spread,
+            'regime': regime,
+        }
+
+    def test_initial_state(self):
+        """초기 상태 테스트"""
+        from src.strategy import PureMicrostructureStrategy
+
+        strategy = PureMicrostructureStrategy()
+        assert strategy.name == "PureMicrostructure"
+        assert len(strategy.history) == 0
+
+    def test_buy_signal_with_strong_conditions(self):
+        """강한 조건 충족 시 매수"""
+        from src.strategy import PureMicrostructureStrategy, PureMicroConfig
+        from src.strategy.base import BarData
+
+        config = PureMicroConfig(
+            entry_score_threshold=0.5,  # 낮은 임계값
+            ofi_consecutive_bars=2,      # 연속 2바
+        )
+        strategy = PureMicrostructureStrategy(config)
+
+        # 히스토리 채우기
+        for i in range(25):
+            bar = self._create_bar(
+                close=350.0,
+                ofi_zscore=2.5,  # 강한 OFI
+            )
+            strategy.on_bar(bar)
+
+        # 강한 매수 조건
+        bar = self._create_bar(
+            close=350.0,
+            ofi_zscore=2.5,       # 강한 OFI
+            imbalance=0.6,        # 60% 매수 불균형
+            spread=0.02,          # 좁은 스프레드
+            regime="LOW"
+        )
+        signal = strategy.on_bar(bar)
+
+        # BarData로 변환하여 점수 확인
+        bar_data = BarData.from_dict(bar)
+        scores = strategy.get_current_score(bar_data)
+        assert scores['buy'].total_score > 0
+
+    def test_hold_with_wide_spread(self):
+        """스프레드 넓으면 HOLD"""
+        from src.strategy import PureMicrostructureStrategy
+
+        strategy = PureMicrostructureStrategy()
+
+        # 히스토리 채우기
+        for i in range(25):
+            bar = self._create_bar(close=350.0)
+            strategy.on_bar(bar)
+
+        # 넓은 스프레드
+        bar = self._create_bar(
+            close=350.0,
+            ofi_zscore=3.0,
+            imbalance=0.7,
+            spread=0.10,  # 5틱 (넓음)
+        )
+        signal = strategy.on_bar(bar)
+
+        assert signal == Signal.HOLD
+
+    def test_cooldown_after_trade(self):
+        """거래 후 쿨다운"""
+        from src.strategy import PureMicrostructureStrategy, PureMicroConfig
+
+        config = PureMicroConfig(
+            entry_score_threshold=0.3,  # 매우 낮은 임계값
+            cooldown_bars=5,
+        )
+        strategy = PureMicrostructureStrategy(config)
+
+        # 히스토리 채우기
+        for i in range(25):
+            bar = self._create_bar(close=350.0, ofi_zscore=2.5)
+            strategy.on_bar(bar)
+
+        # 쿨다운 초기화
+        strategy.bars_since_last_trade = 0
+
+        # 쿨다운 중에는 HOLD
+        bar = self._create_bar(
+            close=350.0,
+            ofi_zscore=3.0,
+            imbalance=0.7,
+            spread=0.02,
+        )
+        signal = strategy.on_bar(bar)
+
+        # 쿨다운 중이므로 HOLD
+        assert signal == Signal.HOLD
+
+    def test_signal_score_calculation(self):
+        """시그널 점수 계산 테스트"""
+        from src.strategy import PureMicrostructureStrategy
+        from src.strategy.base import BarData
+
+        strategy = PureMicrostructureStrategy()
+
+        # 히스토리 채우기 (연속 양수 OFI Z-Score)
+        for i in range(25):
+            bar = self._create_bar(close=350.0, ofi_zscore=2.5)
+            strategy.on_bar(bar)
+
+        # 점수 계산
+        bar = self._create_bar(
+            close=350.0,
+            ofi_zscore=2.5,
+            imbalance=0.6,
+            spread=0.02,
+            regime="LOW"
+        )
+
+        # BarData로 변환
+        bar_data = BarData.from_dict(bar)
+        scores = strategy.get_current_score(bar_data)
+
+        # 매수 점수가 존재해야 함
+        assert 'buy' in scores
+        assert 'sell' in scores
+        assert scores['buy'].ofi_score >= 0
+        assert scores['buy'].imbalance_score >= 0
+
+
+class TestAdaptiveMicrostructureStrategy:
+    """AdaptiveMicrostructure 전략 테스트"""
+
+    def _create_bar(
+        self,
+        close: float,
+        regime: str = "MEDIUM",
+    ) -> dict:
+        return {
+            'datetime': datetime.now(),
+            'open': close,
+            'high': close + 0.1,
+            'low': close - 0.1,
+            'close': close,
+            'volume': 100,
+            'ofi': 0.0,
+            'ofi_zscore': 0.0,
+            'bid_ask_imbalance': 0.0,
+            'spread': 0.02,
+            'regime': regime,
+        }
+
+    def test_regime_adaptation(self):
+        """레짐에 따른 파라미터 적응"""
+        from src.strategy import AdaptiveMicrostructureStrategy
+
+        strategy = AdaptiveMicrostructureStrategy()
+
+        # LOW 레짐
+        bar = self._create_bar(close=350.0, regime="LOW")
+        strategy.on_bar(bar)
+
+        # LOW 레짐에서는 entry_score_threshold가 낮아야 함
+        assert strategy.config.entry_score_threshold == 0.55
+
+        # HIGH 레짐
+        bar = self._create_bar(close=350.0, regime="HIGH")
+        strategy.on_bar(bar)
+
+        # HIGH 레짐에서는 entry_score_threshold가 높아야 함
+        assert strategy.config.entry_score_threshold == 0.65
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

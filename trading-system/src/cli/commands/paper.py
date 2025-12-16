@@ -22,6 +22,8 @@ STRATEGY_MAP = {
     "breakout": "BreakoutStrategy",
     "ofi_momentum": "OFIMomentumStrategy",
     "hybrid": "HybridStrategy",
+    "pure_micro": "PureMicrostructureStrategy",
+    "adaptive_micro": "AdaptiveMicrostructureStrategy",
 }
 
 
@@ -124,6 +126,8 @@ async def _run_paper_trading_async(
         BreakoutStrategy,
         OFIMomentumStrategy,
         HybridStrategy,
+        PureMicrostructureStrategy,
+        AdaptiveMicrostructureStrategy,
     )
     from src.paper_trading import PaperTradingEngine, VirtualBroker
 
@@ -132,6 +136,8 @@ async def _run_paper_trading_async(
         "breakout": BreakoutStrategy,
         "ofi_momentum": OFIMomentumStrategy,
         "hybrid": HybridStrategy,
+        "pure_micro": PureMicrostructureStrategy,
+        "adaptive_micro": AdaptiveMicrostructureStrategy,
     }
 
     strategy = strategy_classes[strategy_name]()

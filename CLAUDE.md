@@ -238,108 +238,183 @@ ORDER BY (code, datetime);
   - OFIMomentumStrategy (OFI 모멘텀)
   - HybridStrategy (LSTM + 로지컬)
 
-### Phase 7 🔄 진행 중
+### Phase 7 ✅ 완료
 **모의투자 & 백테스팅 상시 운영 시스템**
 
+- [x] Result DB (SQLite + SQLAlchemy ORM)
+- [x] CLI Tool (Typer 기반)
+  - `sts backtest run --strategy hybrid --start 2024-01-01 --end 2024-12-31`
+  - `sts paper run --strategy hybrid --duration 1h`
+  - `sts runs list/show/compare/delete`
+  - `sts report show/export/compare`
+- [x] Paper Trading Engine (VirtualBroker)
+- [x] Report Generator (TEXT/HTML/JSON/Markdown)
+
+### Phase 8 🔄 진행 중
+**마이크로스트럭처 전략 강화 & 프로덕션 배포**
+
+#### 배경
+- LSTM 학습 데이터 부족 (현재 2,268 샘플, 1년 이상 필요)
+- 분봉 과거 데이터 수집 불가
+- 대안: 마이크로스트럭처 시그널 기반 전략으로 전환
+
 #### 목표
-- CLI 기반 백테스트/모의투자 실행
-- 성과 기록 및 리포트 자동 생성
-- 스케줄러를 통한 자동 실행
 
-#### 아키텍처
-```
-┌─────────────────────────────────────────────────────────────┐
-│  CLI Tool ──► Execution Engine ──► Result DB (SQLite)      │
-│      │              │                    │                 │
-│      │              ├── Backtest Runner  │                 │
-│      │              ├── Paper Trading    │                 │
-│      │              └── Live Trading     │                 │
-│      │                                   │                 │
-│      └───────────► Report Generator ◄────┘                 │
-└─────────────────────────────────────────────────────────────┘
-```
+**즉시 (Phase 8.1)**: 마이크로스트럭처 전략 강화
+- LSTM 의존도 제거
+- OFI/호가불균형/스프레드 기반 순수 로지컬 전략
 
-#### 파일 구조
+**중기 (Phase 8.2)**: 틱/호가 데이터 수집 시작
+- 실시간 호가 데이터 저장 (1일 = 수만 건)
+- API Rate Limit 준수 (초당 20건)
+- 향후 ML 모델 학습용 데이터 축적
+
+**인프라 (Phase 8.3)**: Docker + 배포 자동화
+- Docker Compose (Redis, ClickHouse, App)
+- deploy_to_server.sh 스크립트
+- 모니터링 대시보드
+
+#### 아키텍처 (Phase 8)
 ```
-trading-system/
-├── cli/                      # CLI 도구
-│   ├── main.py              # 진입점 (Typer)
-│   └── commands/            # 명령어 모듈
-├── paper_trading/            # 모의투자 엔진
-│   ├── engine.py
-│   └── virtual_broker.py
-├── reporting/                # 리포트 생성
-│   └── generator.py
-├── database/                 # Result DB
-│   ├── models.py            # SQLAlchemy 모델
-│   └── repository.py        # 데이터 접근 레이어
-└── scheduler/                # 자동 실행
-    └── jobs.py
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Production Server                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  Docker Compose                                                     │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐ │
+│  │   Redis     │  │ ClickHouse  │  │  Trading System             │ │
+│  │  (Streams)  │  │ (TimeSeries)│  │  ├─ Collector               │ │
+│  └─────────────┘  └─────────────┘  │  ├─ Processor               │ │
+│                                     │  ├─ Strategy (No LSTM)     │ │
+│  ┌─────────────┐  ┌─────────────┐  │  ├─ Tick Collector (NEW)    │ │
+│  │  Prometheus │  │   Grafana   │  │  └─ Order Executor         │ │
+│  │ (Metrics)   │  │(Dashboard)  │  └─────────────────────────────┘ │
+│  └─────────────┘  └─────────────┘                                   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-#### CLI 명령어
-```bash
-# 백테스트
-python -m cli backtest --strategy MeanReversion --days 30
-python -m cli backtest --strategy all --output html
+#### 8.1 마이크로스트럭처 전략 강화
 
-# 모의투자
-python -m cli paper --strategy Hybrid --duration 1d
-
-# 리포트
-python -m cli report --run-id <uuid>
-python -m cli compare --strategies MeanReversion,Breakout
+**변경 전 (Hybrid)**:
+```
+LSTM 예측 (70%) + OFI + 호가불균형 → 2/3 조건 충족 시 진입
 ```
 
-#### Result DB 스키마 (SQLite)
+**변경 후 (PureMicrostructure)**:
+```
+OFI (강화) + 호가불균형 + 스프레드 + 레짐 → 복합 스코어링
+```
+
+**새 전략 파라미터**:
+| 시그널 | 가중치 | 임계값 |
+|--------|--------|--------|
+| OFI | 0.4 | ±2σ 연속 3분 |
+| 호가불균형 | 0.3 | > 0.6 or < -0.6 |
+| 스프레드 | 0.2 | < 평균 스프레드 |
+| 레짐 | 0.1 | LOW → Mean Rev, HIGH → Breakout |
+
+#### 8.2 틱/호가 데이터 수집
+
+**API 제약사항**:
+- 한투 API: 초당 20건 제한
+- WebSocket: 실시간 호가/체결 수신 (제한 없음)
+
+**저장 스키마**:
 ```sql
--- 실행 기록
-CREATE TABLE runs (
-    id TEXT PRIMARY KEY,
-    strategy TEXT,
-    mode TEXT,  -- backtest, paper, live
-    start_date TEXT,
-    end_date TEXT,
-    config TEXT,  -- JSON
-    created_at TEXT
-);
+-- 호가 스냅샷 (WebSocket 수신)
+CREATE TABLE kospi.orderbook_snapshots (
+    code String,
+    timestamp DateTime64(3),  -- ms 단위
+    bid_price1 Float64,
+    bid_qty1 UInt32,
+    ask_price1 Float64,
+    ask_qty1 UInt32,
+    -- ... 5호가까지
+    total_bid_qty UInt64,
+    total_ask_qty UInt64
+) ENGINE = MergeTree()
+ORDER BY (code, timestamp);
 
--- 거래 기록
-CREATE TABLE trades (
-    id INTEGER PRIMARY KEY,
-    run_id TEXT,
-    timestamp TEXT,
-    side TEXT,
-    price REAL,
-    quantity INTEGER,
-    pnl REAL,
-    exit_reason TEXT
-);
-
--- 일별 성과
-CREATE TABLE daily_metrics (
-    id INTEGER PRIMARY KEY,
-    run_id TEXT,
-    date TEXT,
-    pnl REAL,
-    trades INTEGER,
-    win_rate REAL,
-    max_drawdown REAL
-);
+-- 체결 틱 (WebSocket 수신)
+CREATE TABLE kospi.trade_ticks (
+    code String,
+    timestamp DateTime64(3),
+    price Float64,
+    volume UInt32,
+    side String  -- BUY/SELL
+) ENGINE = MergeTree()
+ORDER BY (code, timestamp);
 ```
 
-#### 스케줄 작업
-| 시간 | 작업 |
-|------|------|
-| 매일 16:00 | 당일 데이터 백필 + 30일 백테스트 |
-| 매주 토요일 | 전체 기간 백테스트 + 주간 리포트 |
-| 장중 (09:00~15:45) | Paper Trading 실행 |
+**예상 데이터량**:
+- 호가: 약 1초당 1-2건 → 1일 약 25,000건
+- 체결: 변동적, 1일 약 10,000-50,000건
+- 1주일 수집 ≈ 분봉 1년치 데이터량
+
+#### 8.3 Docker Compose 구성
+
+```yaml
+# docker-compose.yml
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    ports: ["8123:8123", "9000:9000"]
+    volumes: ["clickhouse-data:/var/lib/clickhouse"]
+
+  trading-app:
+    build: ./trading-system
+    depends_on: [redis, clickhouse]
+    env_file: .env
+
+  prometheus:
+    image: prom/prometheus
+    volumes: ["./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml"]
+
+  grafana:
+    image: grafana/grafana
+    ports: ["3000:3000"]
+    volumes: ["grafana-data:/var/lib/grafana"]
+```
+
+#### 8.4 배포 스크립트
+
+```bash
+# deploy_to_server.sh
+#!/bin/bash
+SERVER="deploy@your-server"
+APP_DIR="/home/deploy/kospi-trading"
+
+# 1. 코드 동기화
+rsync -avz --exclude '.git' --exclude '__pycache__' \
+  ./ $SERVER:$APP_DIR/
+
+# 2. Docker 재시작
+ssh $SERVER "cd $APP_DIR && docker-compose down && docker-compose up -d"
+
+# 3. 헬스체크
+ssh $SERVER "curl -s localhost:8080/health"
+```
+
+#### 8.5 모니터링 메트릭
+
+| 메트릭 | 설명 | 알림 조건 |
+|--------|------|-----------|
+| `strategy_signals_total` | 생성된 시그널 수 | - |
+| `orders_executed_total` | 실행된 주문 수 | - |
+| `position_pnl` | 현재 포지션 손익 | < -500,000 |
+| `daily_pnl` | 일일 손익 | < -1,000,000 |
+| `redis_lag_seconds` | Redis 처리 지연 | > 5초 |
+| `api_errors_total` | API 에러 수 | > 10/분 |
 
 ---
 
 ## Current Status
 
-**현재 단계**: Phase 7 진행 중
+**현재 단계**: Phase 8 진행 중
 
 **완료된 작업**:
 - Phase 1: 데이터 수집 인프라 (min_data/)
@@ -347,8 +422,11 @@ CREATE TABLE daily_metrics (
 - Phase 3: WebSocket + 주문 API
 - Phase 4: 백테스트 엔진 + 리스크 관리
 - Phase 5: 로지컬 전략 구현
+- Phase 7: CLI, Paper Trading, 리포트 시스템
 
-**다음 작업**:
-- CLI Tool 구현 (Typer)
-- Result DB (SQLite) 구현
-- Paper Trading 엔진 구현
+**다음 작업 (Phase 8)**:
+1. 마이크로스트럭처 전략 강화 (LSTM 제거)
+2. 틱/호가 데이터 수집기 구현
+3. Docker Compose 구성
+4. 배포 스크립트 (deploy_to_server.sh)
+5. 모니터링 시스템 (Prometheus + Grafana)

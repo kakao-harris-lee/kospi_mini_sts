@@ -43,6 +43,9 @@ from .strategies import (
     BreakoutStrategy,
     OFIMomentumStrategy,
     HybridStrategy,
+    PureMicrostructureStrategy,
+    AdaptiveMicrostructureStrategy,
+    PureMicroConfig,
 )
 
 __all__ = [
@@ -75,4 +78,7 @@ __all__ = [
     "BreakoutStrategy",
     "OFIMomentumStrategy",
     "HybridStrategy",
+    "PureMicrostructureStrategy",
+    "AdaptiveMicrostructureStrategy",
+    "PureMicroConfig",
 ]

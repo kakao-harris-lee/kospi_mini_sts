@@ -22,6 +22,8 @@ STRATEGY_MAP = {
     "breakout": "BreakoutStrategy",
     "ofi_momentum": "OFIMomentumStrategy",
     "hybrid": "HybridStrategy",
+    "pure_micro": "PureMicrostructureStrategy",
+    "adaptive_micro": "AdaptiveMicrostructureStrategy",
 }
 
 
@@ -90,6 +92,8 @@ def run_backtest(
             BreakoutStrategy,
             OFIMomentumStrategy,
             HybridStrategy,
+            PureMicrostructureStrategy,
+            AdaptiveMicrostructureStrategy,
         )
         from src.database import ResultRepository
 
@@ -99,6 +103,8 @@ def run_backtest(
             "breakout": BreakoutStrategy,
             "ofi_momentum": OFIMomentumStrategy,
             "hybrid": HybridStrategy,
+            "pure_micro": PureMicrostructureStrategy,
+            "adaptive_micro": AdaptiveMicrostructureStrategy,
         }
         strategy_instance = strategy_classes[strategy]()
 
