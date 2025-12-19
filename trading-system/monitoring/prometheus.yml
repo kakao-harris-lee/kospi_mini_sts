@@ -8,7 +8,8 @@ global:
 alerting:
   alertmanagers: []
 
-rule_files: []
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 scrape_configs:
   # Prometheus self-monitoring
@@ -16,11 +17,14 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Redis metrics (requires redis_exporter)
+  # Redis metrics (via redis_exporter)
   - job_name: 'redis'
     static_configs:
-      - targets: ['redis:6379']
-    metrics_path: /metrics
+      - targets: ['redis-exporter:9121']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'redis'
 
   # ClickHouse metrics
   - job_name: 'clickhouse'
@@ -28,7 +32,27 @@ scrape_configs:
       - targets: ['clickhouse:8123']
     metrics_path: /metrics
 
-  # Trading application metrics (future)
-  # - job_name: 'trading-app'
-  #   static_configs:
-  #     - targets: ['tick-collector:8080', 'strategy-manager:8080']
+  # Trading Application Metrics
+  - job_name: 'tick-collector'
+    static_configs:
+      - targets: ['tick-collector:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'tick-collector'
+
+  - job_name: 'feature-processor'
+    static_configs:
+      - targets: ['feature-processor:8081']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'feature-processor'
+
+  - job_name: 'strategy-manager'
+    static_configs:
+      - targets: ['strategy-manager:8082']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'strategy-manager'

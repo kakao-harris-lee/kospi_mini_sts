@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import sys
 sys.path.insert(0, '/Users/harris/Development/trading-system')
 from config.settings import settings
-from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient
+from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient, init_metrics, get_metrics
 
 logger = setup_logging("processor")
 
@@ -466,10 +466,21 @@ class FeatureProcessor(StreamConsumer):
             
             # 6. FEATURE_STREAM에 발행
             self.publisher.publish(feature)
-            
+
+            # 메트릭 기록
+            metrics = get_metrics()
+            metrics.record_feature_calculation("ofi")
+            metrics.record_feature_calculation("liquidity")
+            if candle_1m:
+                metrics.record_feature_calculation("tech_indicators")
+            metrics.record_redis_message(
+                stream=settings.redis.raw_stream,
+                consumer_group=settings.consumer.processor_group
+            )
+
             logger.debug(f"Processed: {symbol} OFI_Z={ofi_z:.2f} LIQ={liquidity_score:.1f}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error processing message {message.id}: {e}", exc_info=True)
             return False
@@ -490,6 +501,10 @@ class FeatureProcessor(StreamConsumer):
 def main():
     """Feature Processor 실행"""
     logger.info("Starting Feature Processor...")
+
+    # 메트릭 서버 시작 (포트 8081)
+    init_metrics("feature_processor", port=8081)
+
     processor = FeatureProcessor()
     processor.run()
 

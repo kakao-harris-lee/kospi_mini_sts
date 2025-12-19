@@ -79,6 +79,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+    ports:
+      - "8080:8080"  # Prometheus 메트릭
     environment:
       - KIS_APP_KEY=${KIS_APP_KEY}
       - KIS_APP_SECRET=${KIS_APP_SECRET}
@@ -91,6 +93,7 @@ services:
       - CLICKHOUSE_DATABASE=trading_db
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - METRICS_PORT=8080
     command: ["python", "-m", "src.collector.tick_collector"]
     networks:
       - trading-net
@@ -107,6 +110,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    ports:
+      - "8081:8081"  # Prometheus 메트릭
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -115,6 +120,7 @@ services:
       - CLICKHOUSE_DATABASE=trading_db
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - METRICS_PORT=8081
     command: ["python", "-m", "src.processor.feature_processor"]
     networks:
       - trading-net
@@ -133,6 +139,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+    ports:
+      - "8082:8082"  # Prometheus 메트릭
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -143,6 +151,7 @@ services:
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
       - DRY_RUN=${DRY_RUN:-true}
       - STRATEGY=${STRATEGY:-pure_micro}
+      - METRICS_PORT=8082
       # 한투 주문 API (DRY_RUN=false일 때만 사용)
       - KIS_APP_KEY=${KIS_APP_KEY}
       - KIS_APP_SECRET=${KIS_APP_SECRET}
@@ -178,6 +187,24 @@ services:
       - trading-net
 
   # ============================================================
+  # Redis Exporter - Redis 메트릭 (모니터링)
+  # ============================================================
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: trading-redis-exporter
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - trading-net
+
+  # ============================================================
   # Redis Insight - Redis 모니터링 (개발용)
   # ============================================================
   redis-insight:
@@ -203,11 +230,14 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
+    depends_on:
+      - redis-exporter
     networks:
       - trading-net
 

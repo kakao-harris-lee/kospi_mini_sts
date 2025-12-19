@@ -25,7 +25,7 @@ from threading import Thread
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from config.settings import settings
-from src.common import BatchInserter, BatchConfig, init_tables, setup_logging
+from src.common import BatchInserter, BatchConfig, init_tables, setup_logging, init_metrics, get_metrics
 from src.collector.kis_websocket import KISWebSocketAdapter, KISConfig, KISMarket
 from src.collector.data_collector import TickData
 
@@ -155,6 +155,11 @@ class TickDataCollector:
             self._orderbook_count += 1
             self._last_orderbook[tick.symbol] = tick
 
+            # 메트릭 기록
+            metrics = get_metrics()
+            metrics.record_tick(tick.symbol, "orderbook")
+            metrics.record_orderbook_update(tick.symbol)
+
             # Redis 발행 (선택적)
             if self._redis_publisher:
                 self._redis_publisher.publish(tick.to_dict())
@@ -198,6 +203,11 @@ class TickDataCollector:
             self.trade_inserter.add(record)
             self._trade_count += 1
 
+            # 메트릭 기록
+            metrics = get_metrics()
+            metrics.record_tick(tick.symbol, "trade")
+            metrics.record_trade_tick(tick.symbol, side)
+
         except Exception as e:
             logger.error(f"Error processing trade: {e}")
 
@@ -230,6 +240,11 @@ class TickDataCollector:
         """수집기 시작"""
         logger.info(f"Starting Tick Collector for symbols: {self.config.symbols}")
 
+        # 메트릭 서버 시작
+        init_metrics("tick_collector", port=8080)
+        metrics = get_metrics()
+        metrics.set_websocket_status("kis_websocket", False)
+
         # ClickHouse 테이블 초기화
         init_tables()
 
@@ -242,6 +257,7 @@ class TickDataCollector:
         try:
             # WebSocket 연결 및 구독
             self.adapter.connect()
+            metrics.set_websocket_status("kis_websocket", True)
             self.adapter.subscribe(self.config.symbols, self._on_tick)
 
         except KeyboardInterrupt:

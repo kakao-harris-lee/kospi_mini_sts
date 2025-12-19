@@ -1,0 +1,83 @@
+# Trading System Alert Rules
+groups:
+  - name: trading_alerts
+    rules:
+      # 컴포넌트 다운 알림
+      - alert: ComponentDown
+        expr: component_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Trading component {{ $labels.component }} is down"
+          description: "Component {{ $labels.component }} has been down for more than 1 minute."
+
+      # 일일 손실 초과 알림
+      - alert: DailyLossExceeded
+        expr: daily_pnl < -1000000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Daily loss exceeded threshold"
+          description: "Daily P&L is {{ $value }} KRW, exceeding the -1,000,000 threshold."
+
+      # 포지션 손실 알림
+      - alert: PositionLossAlert
+        expr: position_pnl < -500000
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Position loss exceeded threshold"
+          description: "Position P&L for {{ $labels.strategy }} on {{ $labels.symbol }} is {{ $value }} KRW."
+
+      # API 에러 급증 알림
+      - alert: HighAPIErrorRate
+        expr: rate(api_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API error rate detected"
+          description: "API {{ $labels.api }} is experiencing {{ $value }} errors per second."
+
+      # Redis 지연 알림
+      - alert: RedisLagHigh
+        expr: redis_lag_seconds > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis stream lag is high"
+          description: "Stream {{ $labels.stream }} has {{ $value }}s lag."
+
+      # WebSocket 연결 끊김
+      - alert: WebSocketDisconnected
+        expr: websocket_connected == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "WebSocket disconnected"
+          description: "WebSocket connection to {{ $labels.endpoint }} is down."
+
+      # 틱 데이터 수신 중단
+      - alert: NoTickDataReceived
+        expr: rate(tick_data_received_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No tick data received"
+          description: "No tick data has been received for {{ $labels.symbol }} in the last 5 minutes."
+
+      # ClickHouse 삽입 에러
+      - alert: ClickHouseInsertErrors
+        expr: rate(clickhouse_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ClickHouse insert errors detected"
+          description: "Table {{ $labels.table }} is experiencing insert errors."

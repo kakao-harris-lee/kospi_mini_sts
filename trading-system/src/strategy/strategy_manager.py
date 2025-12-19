@@ -18,7 +18,9 @@ from src.common import (
     StreamPublisher,
     StreamMessage,
     RedisClient,
-    setup_logging
+    setup_logging,
+    init_metrics,
+    get_metrics
 )
 
 logger = setup_logging("strategy")
@@ -279,13 +281,39 @@ class StrategyManager(StreamConsumer):
             
             # 5. 주문 실행
             if order:
-                if self.executor.execute(order):
+                success = self.executor.execute(order)
+                metrics = get_metrics()
+
+                # 시그널 메트릭 기록
+                metrics.record_signal(
+                    strategy=order.strategy_id,
+                    signal_type=order.mode.value,
+                    direction=order.side.value
+                )
+
+                if success:
                     self.order_publisher.publish(order.to_dict())
                     self._order_count += 1
-                    
+
+                    # 주문 성공 메트릭
+                    metrics.record_order(
+                        strategy=order.strategy_id,
+                        order_type=order.order_type.value,
+                        side=order.side.value,
+                        status="SUCCESS"
+                    )
+
                     logger.info(
                         f"Order: {order.side.value} {order.size} {symbol} "
                         f"[{order.mode.value}] Up={up_prob:.2f}"
+                    )
+                else:
+                    # 주문 실패 메트릭
+                    metrics.record_order(
+                        strategy=order.strategy_id,
+                        order_type=order.order_type.value,
+                        side=order.side.value,
+                        status="FAILED"
                     )
             
             # 6. 주기적 통계
@@ -338,6 +366,9 @@ class KISOrderExecutorAdapter(BaseOrderExecutor):
 def main():
     """Strategy Manager 실행"""
     logger.info("Starting Strategy Manager...")
+
+    # 메트릭 서버 시작 (포트 8082)
+    init_metrics("strategy_manager", port=8082)
 
     # Dry Run 모드 확인
     if settings.dry_run:
