@@ -1,0 +1,31 @@
+[Unit]
+Description=KOSPI Trading - Feature Processor
+Documentation=https://github.com/your-repo/kospi-trading
+After=network.target redis-server.service trading-tick-collector.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/home/deploy/project/kospi_mini_sts
+EnvironmentFile=/home/deploy/project/kospi_mini_sts/.env
+ExecStart=/home/deploy/project/kospi_mini_sts/venv/bin/python -m src.processor.feature_processor
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-feature-processor
+
+# 리소스 제한
+MemoryMax=512M
+CPUQuota=30%
+
+# 보안 설정
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/deploy/project/kospi_mini_sts/logs
+
+[Install]
+WantedBy=multi-user.target
