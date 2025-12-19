@@ -1,0 +1,8 @@
+[Unit]
+Description=KOSPI Trading System
+Documentation=https://github.com/your-repo/kospi-trading
+After=network.target redis-server.service clickhouse-server.service
+Wants=trading-tick-collector.service trading-feature-processor.service trading-strategy-manager.service trading-db-logger.service
+
+[Install]
+WantedBy=multi-user.target

@@ -38,7 +38,7 @@ class RedisConfig:
 class ClickHouseConfig:
     host: str = os.getenv("CLICKHOUSE_HOST", "localhost")
     port: int = int(os.getenv("CLICKHOUSE_PORT", "8123"))
-    database: str = os.getenv("CLICKHOUSE_DATABASE", "trading_db")
+    database: str = os.getenv("CLICKHOUSE_DATABASE", "kospi")
     user: str = os.getenv("CLICKHOUSE_USER", "default")
     password: str = os.getenv("CLICKHOUSE_PASSWORD", "")
     
