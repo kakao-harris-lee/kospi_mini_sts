@@ -75,6 +75,9 @@ class KISOrderConfig:
 
     @property
     def api_base(self) -> str:
+        """실서버/모의투자 URL"""
+        if self.is_mock:
+            return "https://openapivts.koreainvestment.com:29443"
         return "https://openapi.koreainvestment.com:9443"
 
     @property

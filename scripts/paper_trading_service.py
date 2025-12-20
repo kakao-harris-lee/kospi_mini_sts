@@ -220,10 +220,12 @@ class PaperTradingService:
         strategy: str = "pure_micro",
         capital: float = 10_000_000,
         simulation: bool = False,
+        use_kis_api: bool = True,
     ):
         self.strategy = strategy
         self.capital = capital
         self.simulation = simulation
+        self.use_kis_api = use_kis_api
 
         self.schedule = MarketSchedule()
         self.state = ServiceState.IDLE
@@ -238,6 +240,7 @@ class PaperTradingService:
     def send_market_open_notification(self):
         """장 시작 알림"""
         now = get_kst_now()
+        kis_status = "KIS 모의투자 API" if self.use_kis_api else "가상 브로커"
         msg = (
             f"<b>📈 [Paper Trading] 장 시작</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -245,6 +248,7 @@ class PaperTradingService:
             f"⏰ 시간: {now.strftime('%H:%M:%S')}\n"
             f"📊 전략: {self.strategy}\n"
             f"💰 자본금: {self.capital:,.0f} KRW\n"
+            f"🔗 주문: {kis_status}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"모의투자를 시작합니다."
         )
@@ -335,6 +339,7 @@ class PaperTradingService:
             AdaptiveMicrostructureStrategy,
         )
         from src.paper_trading import PaperTradingEngine, VirtualBroker
+        from src.collector.kis_order import KISOrderAPI, KISOrderConfig, KISOrderExecutor
 
         strategy_classes = {
             "mean_reversion": MeanReversionStrategy,
@@ -347,6 +352,28 @@ class PaperTradingService:
 
         strategy_instance = strategy_classes[self.strategy]()
         broker = VirtualBroker(initial_capital=self.capital)
+
+        # KIS 모의투자 API 설정
+        kis_executor = None
+        futures_symbol = "101F26"  # 2026년 1월물 (근월물)
+        if self.use_kis_api:
+            try:
+                from config.settings import settings
+                kis_config = KISOrderConfig(
+                    app_key=settings.kis.app_key,
+                    app_secret=settings.kis.app_secret,
+                    account_no=settings.kis.account_no,
+                    is_mock=settings.kis.is_mock,
+                )
+
+                if kis_config.account_no:
+                    kis_api = KISOrderAPI(kis_config)
+                    kis_executor = KISOrderExecutor(api=kis_api, dry_run=False)
+                    logger.info(f"KIS 모의투자 API 연동됨 (계좌: {kis_config.account_no})")
+                else:
+                    logger.warning("KIS 계좌번호가 설정되지 않음")
+            except Exception as e:
+                logger.error(f"KIS API 초기화 실패: {e}")
 
         # Redis 클라이언트
         redis_client = None
@@ -371,6 +398,8 @@ class PaperTradingService:
             strategy=strategy_instance,
             broker=broker,
             redis_client=redis_client,
+            kis_executor=kis_executor,
+            symbol=futures_symbol,
         )
 
         self.state = ServiceState.TRADING
@@ -460,6 +489,8 @@ class PaperTradingService:
         logger.info("Paper Trading 서비스 시작 (데몬 모드)")
         self.running = True
 
+        kis_status = "KIS 모의투자 API" if self.use_kis_api else "가상 브로커"
+
         # 시작 알림
         self.telegram.send(
             f"<b>🚀 [Paper Trading] 서비스 시작</b>\n"
@@ -467,6 +498,7 @@ class PaperTradingService:
             f"전략: {self.strategy}\n"
             f"자본금: {self.capital:,.0f} KRW\n"
             f"모드: {'시뮬레이션' if self.simulation else '실시간'}\n"
+            f"주문: {kis_status}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"장 시간에 자동으로 거래합니다."
         )
@@ -547,6 +579,11 @@ def main():
         action="store_true",
         help="텔레그램 알림 테스트"
     )
+    parser.add_argument(
+        "--no-kis",
+        action="store_true",
+        help="KIS API 사용 안 함 (가상 브로커만 사용)"
+    )
 
     args = parser.parse_args()
 
@@ -554,6 +591,7 @@ def main():
         strategy=args.strategy,
         capital=args.capital,
         simulation=args.simulation,
+        use_kis_api=not args.no_kis,
     )
 
     # 텔레그램 테스트

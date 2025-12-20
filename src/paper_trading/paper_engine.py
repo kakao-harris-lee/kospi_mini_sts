@@ -2,12 +2,13 @@
 Paper Trading Engine
 
 실시간 데이터로 전략을 실행하고 가상 주문을 처리하는 모의투자 엔진
+KIS 모의투자 API 연동 지원
 """
 import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 
 from .virtual_broker import (
     VirtualBroker,
@@ -21,11 +22,68 @@ from .virtual_broker import (
 logger = logging.getLogger(__name__)
 
 
+class KISOrderBridge:
+    """
+    KIS 주문 API 브릿지
+
+    VirtualBroker와 KISOrderExecutor를 연결하여
+    가상 체결과 실제 주문을 동시에 처리
+    """
+
+    def __init__(self, kis_executor=None, symbol: str = "101F26"):
+        """
+        :param kis_executor: KISOrderExecutor 인스턴스
+        :param symbol: 거래 종목코드 (KRX 형식)
+        """
+        self.executor = kis_executor
+        self.symbol = symbol
+        self.orders: List[Dict] = []  # 주문 이력
+
+    def place_order(self, side: str, quantity: int, price: float) -> Optional[str]:
+        """
+        KIS API로 주문 전송
+
+        :param side: "BUY" 또는 "SELL"
+        :param quantity: 수량
+        :param price: 가격
+        :return: 주문번호 (실패 시 None)
+        """
+        if not self.executor:
+            return None
+
+        order_side = "buy" if side == "BUY" else "sell"
+
+        try:
+            order_no = self.executor.execute(
+                symbol=self.symbol,
+                side=order_side,
+                size=quantity,
+                price=price,
+                order_type="market"  # 시장가 주문
+            )
+
+            self.orders.append({
+                'timestamp': datetime.now().isoformat(),
+                'side': side,
+                'quantity': quantity,
+                'price': price,
+                'order_no': order_no,
+            })
+
+            logger.info(f"KIS Order sent: {side} {quantity} @ {price} -> {order_no}")
+            return order_no
+
+        except Exception as e:
+            logger.error(f"KIS Order failed: {e}")
+            return None
+
+
 class PaperTradingEngine:
     """
     Paper Trading Engine
 
     실시간 Redis Streams 데이터를 사용하여 전략을 실행합니다.
+    KIS 모의투자 API 연동 지원.
     """
 
     def __init__(
@@ -35,6 +93,8 @@ class PaperTradingEngine:
         redis_client=None,
         feature_stream: str = "FEATURE_STREAM",
         run_id: str = None,
+        kis_executor=None,
+        symbol: str = "101F26",
     ):
         """
         :param strategy: BaseStrategy 인스턴스
@@ -42,12 +102,18 @@ class PaperTradingEngine:
         :param redis_client: Redis 클라이언트
         :param feature_stream: 데이터 스트림 이름
         :param run_id: 실행 ID (DB 저장용)
+        :param kis_executor: KISOrderExecutor 인스턴스 (실제 주문 시)
+        :param symbol: 거래 종목코드
         """
         self.strategy = strategy
         self.broker = broker or VirtualBroker()
         self.redis = redis_client
         self.feature_stream = feature_stream
         self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.symbol = symbol
+
+        # KIS 주문 브릿지
+        self.kis_bridge = KISOrderBridge(kis_executor, symbol) if kis_executor else None
 
         # 상태
         self.is_running = False
@@ -63,6 +129,7 @@ class PaperTradingEngine:
         # 히스토리
         self.equity_history: List[Dict[str, Any]] = []
         self.signal_history: List[Dict[str, Any]] = []
+        self.kis_orders: List[Dict] = []  # KIS 주문 이력
 
     async def start(self, duration_seconds: int = None):
         """
@@ -230,7 +297,7 @@ class PaperTradingEngine:
             return None
 
     async def _handle_signal(self, signal, bar_data: Dict[str, Any]):
-        """시그널 처리"""
+        """시그널 처리 (VirtualBroker + KIS 실제 주문)"""
         from src.strategy import Signal, PositionSide as StrategyPositionSide
 
         signal_info = {
@@ -243,26 +310,40 @@ class PaperTradingEngine:
 
         logger.debug(f"Signal: {signal} at price {bar_data['close']:.2f}")
 
+        price = bar_data['close']
+
         # 포지션이 없을 때
         if not self.broker.position.is_open:
             if signal == Signal.BUY:
                 self.broker.submit_order(OrderSide.BUY, quantity=1)
-                logger.info(f"OPEN LONG at {bar_data['close']:.2f}")
+                # KIS 실제 주문
+                if self.kis_bridge:
+                    self.kis_bridge.place_order("BUY", 1, price)
+                logger.info(f"OPEN LONG at {price:.2f}")
             elif signal == Signal.SELL:
                 self.broker.submit_order(OrderSide.SELL, quantity=1)
-                logger.info(f"OPEN SHORT at {bar_data['close']:.2f}")
+                # KIS 실제 주문
+                if self.kis_bridge:
+                    self.kis_bridge.place_order("SELL", 1, price)
+                logger.info(f"OPEN SHORT at {price:.2f}")
 
         # 롱 포지션일 때
         elif self.broker.position.side == PositionSide.LONG:
             if signal == Signal.SELL:
                 self.broker.close_position(reason="SIGNAL")
-                logger.info(f"CLOSE LONG at {bar_data['close']:.2f}")
+                # KIS 실제 주문 (롱 청산 = 매도)
+                if self.kis_bridge:
+                    self.kis_bridge.place_order("SELL", 1, price)
+                logger.info(f"CLOSE LONG at {price:.2f}")
 
         # 숏 포지션일 때
         elif self.broker.position.side == PositionSide.SHORT:
             if signal == Signal.BUY:
                 self.broker.close_position(reason="SIGNAL")
-                logger.info(f"CLOSE SHORT at {bar_data['close']:.2f}")
+                # KIS 실제 주문 (숏 청산 = 매수)
+                if self.kis_bridge:
+                    self.kis_bridge.place_order("BUY", 1, price)
+                logger.info(f"CLOSE SHORT at {price:.2f}")
 
     def _on_order_fill(self, order: VirtualOrder):
         """주문 체결 콜백"""
@@ -293,6 +374,10 @@ class PaperTradingEngine:
         """종료 정리"""
         # 미청산 포지션 청산
         if self.broker.position.is_open:
+            # 현재 포지션 방향에 따라 반대 주문
+            if self.kis_bridge:
+                side = "SELL" if self.broker.position.side == PositionSide.LONG else "BUY"
+                self.kis_bridge.place_order(side, 1, self.broker.position.current_price)
             self.broker.close_position(reason="SESSION_END")
             logger.info("Closed remaining position at session end")
 
@@ -313,6 +398,8 @@ class PaperTradingEngine:
             'duration_seconds': duration,
             'bars_processed': self.bars_processed,
             'signals_generated': self.signals_generated,
+            'kis_enabled': self.kis_bridge is not None,
+            'kis_orders': self.kis_bridge.orders if self.kis_bridge else [],
             **summary,
             'trades': [
                 {
