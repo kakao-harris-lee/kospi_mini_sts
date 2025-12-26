@@ -25,7 +25,7 @@ from threading import Thread
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from config.settings import settings
-from src.common import BatchInserter, BatchConfig, init_tables, setup_logging, init_metrics, get_metrics
+from src.common import setup_logging, init_metrics, get_metrics
 from src.collector.kis_websocket import KISWebSocketAdapter, KISConfig, KISMarket
 from src.collector.data_collector import TickData
 
@@ -44,62 +44,22 @@ class TickCollectorConfig:
 
 class TickDataCollector:
     """
-    틱/호가 데이터 수집기
+    틱/호가 데이터 수집기 (v0.0.2 - Lightened)
 
-    WebSocket → ClickHouse 배치 삽입
-    선택적으로 Redis Stream에도 발행
+    WebSocket → Redis Stream (fire-and-forget)
+    ClickHouse 저장은 별도 RawDataLogger가 담당
     """
-
-    # 호가 테이블 컬럼
-    ORDERBOOK_COLUMNS = [
-        "timestamp", "symbol",
-        "bid_price_1", "bid_qty_1", "bid_price_2", "bid_qty_2",
-        "bid_price_3", "bid_qty_3", "bid_price_4", "bid_qty_4",
-        "bid_price_5", "bid_qty_5",
-        "ask_price_1", "ask_qty_1", "ask_price_2", "ask_qty_2",
-        "ask_price_3", "ask_qty_3", "ask_price_4", "ask_qty_4",
-        "ask_price_5", "ask_qty_5",
-        "spread", "mid_price", "imbalance"
-    ]
-
-    # 체결 테이블 컬럼
-    TRADE_COLUMNS = [
-        "timestamp", "symbol", "price", "volume", "side",
-        "bid_price", "ask_price", "open_interest", "cumulative_volume"
-    ]
 
     def __init__(self, config: TickCollectorConfig, kis_config: KISConfig):
         self.config = config
         self.adapter = KISWebSocketAdapter(kis_config)
 
-        # 호가 배치 삽입기
-        self.orderbook_inserter = BatchInserter(
-            BatchConfig(
-                table_name="orderbook_snapshots",
-                column_names=self.ORDERBOOK_COLUMNS,
-                batch_size=config.orderbook_batch_size,
-                flush_interval_sec=config.flush_interval_sec
-            )
+        # Redis Publisher (필수)
+        from src.common import StreamPublisher
+        self._redis_publisher = StreamPublisher(
+            settings.redis.raw_stream,
+            maxlen=settings.redis.stream_maxlen
         )
-
-        # 체결 배치 삽입기
-        self.trade_inserter = BatchInserter(
-            BatchConfig(
-                table_name="trade_ticks",
-                column_names=self.TRADE_COLUMNS,
-                batch_size=config.trade_batch_size,
-                flush_interval_sec=config.flush_interval_sec
-            )
-        )
-
-        # Redis Publisher (선택적)
-        self._redis_publisher = None
-        if config.publish_to_redis:
-            from src.common import StreamPublisher
-            self._redis_publisher = StreamPublisher(
-                settings.redis.raw_stream,
-                maxlen=settings.redis.stream_maxlen
-            )
 
         # 통계
         self._orderbook_count = 0
@@ -110,48 +70,9 @@ class TickDataCollector:
 
     def _on_orderbook(self, tick: TickData):
         """
-        호가 데이터 수신 콜백
-
-        호가는 bid_price_2 등이 채워져 있으면 호가 데이터로 간주
+        호가 데이터 수신 콜백 → Redis Stream 발행
         """
         try:
-            # 스프레드 & 불균형 계산
-            spread = tick.ask_price_1 - tick.bid_price_1 if tick.bid_price_1 and tick.ask_price_1 else 0
-            mid_price = (tick.bid_price_1 + tick.ask_price_1) / 2 if tick.bid_price_1 and tick.ask_price_1 else 0
-
-            total_bid = (tick.bid_qty_1 or 0) + (tick.bid_qty_2 or 0) + (tick.bid_qty_3 or 0)
-            total_ask = (tick.ask_qty_1 or 0) + (tick.ask_qty_2 or 0) + (tick.ask_qty_3 or 0)
-            imbalance = (total_bid - total_ask) / (total_bid + total_ask) if (total_bid + total_ask) > 0 else 0
-
-            record = {
-                "timestamp": datetime.fromtimestamp(tick.timestamp),
-                "symbol": tick.symbol,
-                "bid_price_1": tick.bid_price_1 or 0,
-                "bid_qty_1": tick.bid_qty_1 or 0,
-                "bid_price_2": tick.bid_price_2 or 0,
-                "bid_qty_2": tick.bid_qty_2 or 0,
-                "bid_price_3": tick.bid_price_3 or 0,
-                "bid_qty_3": tick.bid_qty_3 or 0,
-                "bid_price_4": tick.bid_price_4 or 0,
-                "bid_qty_4": tick.bid_qty_4 or 0,
-                "bid_price_5": tick.bid_price_5 or 0,
-                "bid_qty_5": tick.bid_qty_5 or 0,
-                "ask_price_1": tick.ask_price_1 or 0,
-                "ask_qty_1": tick.ask_qty_1 or 0,
-                "ask_price_2": tick.ask_price_2 or 0,
-                "ask_qty_2": tick.ask_qty_2 or 0,
-                "ask_price_3": tick.ask_price_3 or 0,
-                "ask_qty_3": tick.ask_qty_3 or 0,
-                "ask_price_4": tick.ask_price_4 or 0,
-                "ask_qty_4": tick.ask_qty_4 or 0,
-                "ask_price_5": tick.ask_price_5 or 0,
-                "ask_qty_5": tick.ask_qty_5 or 0,
-                "spread": spread,
-                "mid_price": mid_price,
-                "imbalance": imbalance,
-            }
-
-            self.orderbook_inserter.add(record)
             self._orderbook_count += 1
             self._last_orderbook[tick.symbol] = tick
 
@@ -160,25 +81,22 @@ class TickDataCollector:
             metrics.record_tick(tick.symbol, "orderbook")
             metrics.record_orderbook_update(tick.symbol)
 
-            # Redis 발행 (선택적)
-            if self._redis_publisher:
-                self._redis_publisher.publish(tick.to_dict())
+            # Redis 발행 (fire-and-forget)
+            self._redis_publisher.publish(tick.to_dict())
 
         except Exception as e:
             logger.error(f"Error processing orderbook: {e}")
 
     def _on_trade(self, tick: TickData):
         """
-        체결 데이터 수신 콜백
-
-        체결은 tick_volume이 있으면 체결로 간주
+        체결 데이터 수신 콜백 → 메트릭만 기록
+        (체결 데이터는 호가와 함께 Redis로 이미 발행됨)
         """
         try:
             # 매수/매도 추정 (체결가와 호가 비교)
             last_ob = self._last_orderbook.get(tick.symbol)
             if last_ob and tick.bid_price_1:
-                # 체결가가 매도호가에 가까우면 BUY, 매수호가에 가까우면 SELL
-                price = tick.bid_price_1  # 현재가로 사용
+                price = tick.bid_price_1
                 if last_ob.ask_price_1 and price >= last_ob.ask_price_1:
                     side = "BUY"
                 elif last_ob.bid_price_1 and price <= last_ob.bid_price_1:
@@ -188,19 +106,6 @@ class TickDataCollector:
             else:
                 side = "UNKNOWN"
 
-            record = {
-                "timestamp": datetime.fromtimestamp(tick.timestamp),
-                "symbol": tick.symbol,
-                "price": tick.bid_price_1 or 0,  # 체결 데이터에서 현재가
-                "volume": tick.tick_volume or 0,
-                "side": side,
-                "bid_price": tick.bid_price_1 or 0,
-                "ask_price": tick.ask_price_1 or 0,
-                "open_interest": tick.open_interest or 0,
-                "cumulative_volume": 0,  # 누적 거래량 (별도 추적 필요)
-            }
-
-            self.trade_inserter.add(record)
             self._trade_count += 1
 
             # 메트릭 기록
@@ -237,20 +142,13 @@ class TickDataCollector:
             self._last_report = now
 
     def start(self):
-        """수집기 시작"""
-        logger.info(f"Starting Tick Collector for symbols: {self.config.symbols}")
+        """수집기 시작 (v0.0.2 - Redis only)"""
+        logger.info(f"Starting Tick Collector (lightweight) for symbols: {self.config.symbols}")
 
         # 메트릭 서버 시작
         init_metrics("tick_collector", port=8080)
         metrics = get_metrics()
         metrics.set_websocket_status("kis_websocket", False)
-
-        # ClickHouse 테이블 초기화
-        init_tables()
-
-        # 배치 삽입기 시작
-        self.orderbook_inserter.start()
-        self.trade_inserter.start()
 
         self._running = True
 
@@ -269,8 +167,6 @@ class TickDataCollector:
         """수집기 종료"""
         self._running = False
         self.adapter.disconnect()
-        self.orderbook_inserter.stop()
-        self.trade_inserter.stop()
 
         logger.info(
             f"Tick Collector stopped. "

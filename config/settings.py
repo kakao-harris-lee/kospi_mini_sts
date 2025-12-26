@@ -95,18 +95,26 @@ class ConsumerGroupConfig:
     collector_group: str = "collector_group"
     processor_group: str = "feature_processor_group"
     logger_group: str = "db_logger_group"
+    raw_data_logger_group: str = "raw_data_logger"  # v0.0.2: RAW_DATA_STREAM → ClickHouse
     prediction_group: str = "prediction_engine_group"
     strategy_group: str = "strategy_manager_group"
-    
+
     # 재시작 시 읽기 시작 위치
     # "0" = 처음부터, "$" = 새 메시지만, ">" = 미처리 메시지부터
     start_id: str = ">"
-    
+
     # 블로킹 읽기 타임아웃 (ms)
     block_ms: int = 1000
-    
+
     # 한 번에 읽어올 메시지 수
     read_count: int = 100
+
+
+@dataclass
+class MockPredictionConfig:
+    """Mock Prediction Engine 설정 (v0.0.2) - 테스트/백테스트 전용"""
+    enabled: bool = os.getenv("USE_MOCK_PREDICTION", "false").lower() == "true"
+    mode: str = os.getenv("MOCK_PREDICTION_MODE", "ofi_based")  # random | ma_cross | ofi_based
 
 
 @dataclass
@@ -117,6 +125,7 @@ class Settings:
     model: ModelConfig = field(default_factory=ModelConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
+    mock_prediction: MockPredictionConfig = field(default_factory=MockPredictionConfig)  # v0.0.2
 
     # 로깅 레벨
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

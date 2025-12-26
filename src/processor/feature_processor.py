@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import sys
 from config.settings import settings
-from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient, init_metrics, get_metrics
+from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient, init_metrics, get_metrics, ClickHouseClient
 
 logger = setup_logging("processor")
 
@@ -106,9 +106,62 @@ class OFICalculator:
         """최근 N틱의 누적 OFI"""
         if not self.ofi_history:
             return 0.0
-        
+
         recent = list(self.ofi_history)[-window:]
         return sum(recent)
+
+    def warm_up(self, symbol: str) -> int:
+        """
+        ClickHouse에서 최근 호가 데이터를 로드하여 OFI 히스토리 초기화 (v0.0.2)
+
+        Args:
+            symbol: 종목 코드
+
+        Returns:
+            로드된 레코드 수
+        """
+        try:
+            client = ClickHouseClient.get_client()
+
+            query = """
+                SELECT timestamp, bid_price_1, bid_qty_1, ask_price_1, ask_qty_1
+                FROM orderbook_snapshots
+                WHERE symbol = %(symbol)s
+                ORDER BY timestamp DESC
+                LIMIT %(limit)s
+            """
+
+            result = client.query(query, parameters={
+                'symbol': symbol,
+                'limit': self.lookback
+            })
+
+            rows = result.result_rows
+            if not rows:
+                logger.warning(f"Warm-up: No data found for {symbol}")
+                return 0
+
+            # 역순으로 정렬 (oldest first)
+            rows = list(reversed(rows))
+
+            # 각 행에 대해 OFI 계산
+            for row in rows:
+                timestamp, bid_p1, bid_q1, ask_p1, ask_q1 = row
+                ts = timestamp.timestamp() if hasattr(timestamp, 'timestamp') else float(timestamp)
+                self.calculate_tick_ofi(
+                    bid_price=float(bid_p1 or 0),
+                    bid_qty=float(bid_q1 or 0),
+                    ask_price=float(ask_p1 or 0),
+                    ask_qty=float(ask_q1 or 0),
+                    timestamp=ts
+                )
+
+            logger.info(f"Warm-up: Loaded {len(rows)} OFI records for {symbol}")
+            return len(rows)
+
+        except Exception as e:
+            logger.error(f"Warm-up failed for {symbol}: {e}")
+            return 0
 
 
 class LiquidityCalculator:
@@ -366,8 +419,11 @@ class FeatureProcessor(StreamConsumer):
     Feature Processor 메인 클래스
     RAW_DATA_STREAM → FEATURE_STREAM
     """
-    
-    def __init__(self):
+
+    # 기본 워밍업 심볼 (근월물 코드)
+    DEFAULT_WARMUP_SYMBOLS = ["A05601", "A05602"]
+
+    def __init__(self, warmup_symbols: list = None):
         super().__init__(
             stream_name=settings.redis.raw_stream,
             group_name=settings.consumer.processor_group,
@@ -376,6 +432,29 @@ class FeatureProcessor(StreamConsumer):
         self.publisher = StreamPublisher(settings.redis.feature_stream)
         self.symbol_states: Dict[str, SymbolState] = {}
         self.redis = RedisClient.get_client()
+        self._warmup_symbols = warmup_symbols or self.DEFAULT_WARMUP_SYMBOLS
+        self._warmed_up = False
+
+    def _warm_up_symbols(self):
+        """
+        OFI 계산기 워밍업 (v0.0.2)
+        ClickHouse에서 최근 호가 데이터를 로드하여 OFI 히스토리 초기화
+        """
+        if self._warmed_up:
+            return
+
+        logger.info(f"Warming up OFI calculators for symbols: {self._warmup_symbols}")
+
+        for symbol in self._warmup_symbols:
+            try:
+                state = self._get_state(symbol)
+                count = state.ofi_calc.warm_up(symbol)
+                if count > 0:
+                    logger.info(f"Warm-up complete: {symbol} with {count} records")
+            except Exception as e:
+                logger.warning(f"Warm-up skipped for {symbol}: {e}")
+
+        self._warmed_up = True
     
     def _get_state(self, symbol: str) -> SymbolState:
         """심볼별 상태 가져오기 (없으면 생성)"""
@@ -505,6 +584,10 @@ def main():
     init_metrics("feature_processor", port=8081)
 
     processor = FeatureProcessor()
+
+    # v0.0.2: OFI 워밍업
+    processor._warm_up_symbols()
+
     processor.run()
 
 
