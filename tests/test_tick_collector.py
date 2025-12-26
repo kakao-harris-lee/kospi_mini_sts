@@ -65,7 +65,7 @@ class TestTickCollectorConfig:
 
 
 class TestTickDataCollector:
-    """틱 데이터 수집기 테스트"""
+    """틱 데이터 수집기 테스트 (v0.0.2 - 경량화 버전)"""
 
     @pytest.fixture
     def mock_kis_config(self):
@@ -78,19 +78,18 @@ class TestTickDataCollector:
 
     @pytest.fixture
     def mock_collector(self, mock_kis_config):
-        """Mock 수집기 (ClickHouse 없이)"""
+        """Mock 수집기 (Redis only)"""
         config = TickCollectorConfig(
             symbols=["101F26"],
-            publish_to_redis=False
+            publish_to_redis=True
         )
 
-        with patch('src.collector.tick_collector.BatchInserter') as MockInserter:
-            mock_inserter = MagicMock()
-            MockInserter.return_value = mock_inserter
+        with patch('src.common.StreamPublisher') as MockPub:
+            with patch('src.collector.tick_collector.KISWebSocketAdapter'):
+                mock_publisher = MagicMock()
+                MockPub.return_value = mock_publisher
 
-            with patch('src.collector.tick_collector.init_tables'):
                 collector = TickDataCollector(config, mock_kis_config)
-                collector._mock_inserter = mock_inserter
                 yield collector
 
     def test_collector_initialization(self, mock_collector):
@@ -99,25 +98,14 @@ class TestTickDataCollector:
         assert mock_collector._orderbook_count == 0
         assert mock_collector._trade_count == 0
 
-    def test_orderbook_columns(self, mock_collector):
-        """호가 테이블 컬럼 확인"""
-        columns = mock_collector.ORDERBOOK_COLUMNS
-        assert "timestamp" in columns
-        assert "symbol" in columns
-        assert "bid_price_1" in columns
-        assert "ask_price_5" in columns
-        assert "spread" in columns
-        assert "imbalance" in columns
+    def test_collector_has_redis_publisher(self, mock_collector):
+        """Collector는 Redis publisher를 가져야 함"""
+        assert mock_collector._redis_publisher is not None
 
-    def test_trade_columns(self, mock_collector):
-        """체결 테이블 컬럼 확인"""
-        columns = mock_collector.TRADE_COLUMNS
-        assert "timestamp" in columns
-        assert "symbol" in columns
-        assert "price" in columns
-        assert "volume" in columns
-        assert "side" in columns
-        assert "open_interest" in columns
+    def test_collector_has_no_db_inserters(self, mock_collector):
+        """v0.0.2: Collector는 DB inserter가 없어야 함"""
+        assert not hasattr(mock_collector, 'orderbook_inserter')
+        assert not hasattr(mock_collector, 'trade_inserter')
 
     def test_on_orderbook_processing(self, mock_collector):
         """호가 데이터 처리 테스트"""
@@ -138,11 +126,13 @@ class TestTickDataCollector:
             ask_qty_3=25,
         )
 
-        mock_collector._on_orderbook(tick)
+        with patch('src.collector.tick_collector.get_metrics') as mock_metrics:
+            mock_metrics.return_value = MagicMock()
+            mock_collector._on_orderbook(tick)
 
         assert mock_collector._orderbook_count == 1
         assert "101F26" in mock_collector._last_orderbook
-        mock_collector.orderbook_inserter.add.assert_called_once()
+        mock_collector._redis_publisher.publish.assert_called_once()
 
     def test_on_trade_processing(self, mock_collector):
         """체결 데이터 처리 테스트"""
@@ -159,17 +149,18 @@ class TestTickDataCollector:
         tick = TickData(
             symbol="101F26",
             timestamp=time.time(),
-            bid_price_1=350.05,  # 매도호가에 체결 -> BUY
+            bid_price_1=350.05,
             bid_qty_1=0,
             ask_price_1=350.05,
             ask_qty_1=0,
             tick_volume=5,
         )
 
-        mock_collector._on_trade(tick)
+        with patch('src.collector.tick_collector.get_metrics') as mock_metrics:
+            mock_metrics.return_value = MagicMock()
+            mock_collector._on_trade(tick)
 
         assert mock_collector._trade_count == 1
-        mock_collector.trade_inserter.add.assert_called_once()
 
     def test_tick_classification_orderbook(self, mock_collector):
         """틱 분류 - 호가 데이터"""
@@ -178,7 +169,7 @@ class TestTickDataCollector:
             timestamp=time.time(),
             bid_price_1=350.0,
             bid_qty_1=10,
-            bid_price_2=349.95,  # L2 데이터 있음 -> 호가
+            bid_price_2=349.95,
             bid_qty_2=15,
             ask_price_1=350.05,
             ask_qty_1=12,
@@ -186,10 +177,12 @@ class TestTickDataCollector:
             ask_qty_2=18,
         )
 
-        mock_collector._on_tick(tick)
+        with patch('src.collector.tick_collector.get_metrics') as mock_metrics:
+            mock_metrics.return_value = MagicMock()
+            mock_collector._on_tick(tick)
 
         assert mock_collector._orderbook_count == 1
-        assert mock_collector._trade_count == 0  # 체결 아님
+        assert mock_collector._trade_count == 0
 
     def test_tick_classification_trade(self, mock_collector):
         """틱 분류 - 체결 데이터"""
@@ -200,56 +193,12 @@ class TestTickDataCollector:
             bid_qty_1=0,
             ask_price_1=350.05,
             ask_qty_1=0,
-            tick_volume=10,  # 체결량 있음 -> 체결
+            tick_volume=10,
         )
 
-        mock_collector._on_tick(tick)
+        with patch('src.collector.tick_collector.get_metrics') as mock_metrics:
+            mock_metrics.return_value = MagicMock()
+            mock_collector._on_tick(tick)
 
-        assert mock_collector._orderbook_count == 0  # 호가 아님
+        assert mock_collector._orderbook_count == 0
         assert mock_collector._trade_count == 1
-
-    def test_spread_calculation(self, mock_collector):
-        """스프레드 계산 테스트"""
-        tick = TickData(
-            symbol="101F26",
-            timestamp=time.time(),
-            bid_price_1=350.0,
-            bid_qty_1=10,
-            bid_price_2=349.95,
-            bid_qty_2=15,
-            ask_price_1=350.10,  # 스프레드 = 0.10
-            ask_qty_1=12,
-            ask_price_2=350.15,
-            ask_qty_2=18,
-        )
-
-        mock_collector._on_orderbook(tick)
-
-        # 호출된 인자 확인
-        call_args = mock_collector.orderbook_inserter.add.call_args[0][0]
-        assert abs(call_args["spread"] - 0.10) < 0.001
-        assert abs(call_args["mid_price"] - 350.05) < 0.001
-
-    def test_imbalance_calculation(self, mock_collector):
-        """불균형 계산 테스트"""
-        tick = TickData(
-            symbol="101F26",
-            timestamp=time.time(),
-            bid_price_1=350.0,
-            bid_qty_1=100,  # 총 매수 = 100
-            bid_qty_2=0,
-            bid_qty_3=0,
-            ask_price_1=350.05,
-            ask_qty_1=50,  # 총 매도 = 50
-            ask_qty_2=0,
-            ask_qty_3=0,
-            bid_price_2=349.95,
-            ask_price_2=350.10,
-        )
-
-        mock_collector._on_orderbook(tick)
-
-        call_args = mock_collector.orderbook_inserter.add.call_args[0][0]
-        # imbalance = (100 - 50) / (100 + 50) = 0.333...
-        expected_imbalance = (100 - 50) / (100 + 50)
-        assert abs(call_args["imbalance"] - expected_imbalance) < 0.001
