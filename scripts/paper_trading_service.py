@@ -10,6 +10,8 @@ Paper Trading 서비스
 - 장 종료 (15:45) 알림 및 일일 결과 요약
 - 공휴일/주말 자동 감지 및 스킵
 - tick_collector, feature_processor 자동 관리
+- 시간대별 요약 알림 (점심, 오후)
+- 선물 코드 자동 감지
 
 사용법:
     python paper_trading_service.py                    # 데몬 모드
@@ -35,6 +37,7 @@ PROJECT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from src.common.telegram import TelegramNotifier
+from src.common.futures_code import get_front_month_code, get_kis_code, get_current_futures_info
 
 # 로깅 설정
 logging.basicConfig(
@@ -64,6 +67,9 @@ class MarketSchedule:
     # 서비스 종료 시간 (장 종료 후)
     service_end_hour: int = 15
     service_end_minute: int = 50
+
+    # 요약 알림 시간 (시:분)
+    summary_times: tuple = ((12, 0), (14, 0))  # 점심, 오후 2시
 
 
 # 한국 공휴일 (2024-2026)
@@ -221,26 +227,34 @@ class PaperTradingService:
         capital: float = 10_000_000,
         simulation: bool = False,
         use_kis_api: bool = True,
+        enable_summary_alerts: bool = True,
     ):
         self.strategy = strategy
         self.capital = capital
         self.simulation = simulation
         self.use_kis_api = use_kis_api
+        self.enable_summary_alerts = enable_summary_alerts
 
         self.schedule = MarketSchedule()
         self.state = ServiceState.IDLE
         self.telegram = TelegramNotifier()
         self.process_manager = ProcessManager(PROJECT_DIR)
 
+        # 선물 코드 자동 감지
+        self.futures_info = get_current_futures_info()
+        self.futures_symbol = get_front_month_code()  # KRX 코드 (예: 101H25)
+
         # 거래 결과
         self.engine = None
         self.today_result: Optional[Dict[str, Any]] = None
         self.running = False
+        self.summary_sent: set = set()  # 이미 보낸 요약 알림 시간
 
     def send_market_open_notification(self):
         """장 시작 알림"""
         now = get_kst_now()
         kis_status = "KIS 모의투자 API" if self.use_kis_api else "가상 브로커"
+        front_info = self.futures_info['front_month']
         msg = (
             f"<b>📈 [Paper Trading] 장 시작</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -249,11 +263,12 @@ class PaperTradingService:
             f"📊 전략: {self.strategy}\n"
             f"💰 자본금: {self.capital:,.0f} KRW\n"
             f"🔗 주문: {kis_status}\n"
+            f"📋 종목: {front_info['krx_code']} (D-{front_info['days_to_expiry']})\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"모의투자를 시작합니다."
         )
         self.telegram.send(msg)
-        logger.info("장 시작 알림 전송")
+        logger.info(f"장 시작 알림 전송 (종목: {front_info['krx_code']})")
 
     def send_market_close_notification(self, result: Dict[str, Any]):
         """장 종료 알림 (일일 결과 포함)"""
@@ -312,6 +327,60 @@ class PaperTradingService:
         self.telegram.send(msg)
         logger.info(f"휴장 알림: {reason}")
 
+    def send_interim_summary(self, period: str = ""):
+        """시간대별 요약 알림"""
+        if not self.engine or not self.enable_summary_alerts:
+            return
+
+        now = get_kst_now()
+        result = self.engine.get_result()
+
+        pnl = result.get('total_pnl', 0)
+        total_return = result.get('total_return', 0)
+        total_trades = result.get('total_trades', 0)
+        position = "없음"
+
+        if self.engine.broker.position.is_open:
+            pos_side = self.engine.broker.position.side.value
+            unrealized = self.engine.broker.position.unrealized_pnl
+            position = f"{pos_side} ({format_number(unrealized)})"
+
+        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+
+        msg = (
+            f"<b>📊 [Paper Trading] {period} 현황</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏰ 시간: {now.strftime('%H:%M')}\n"
+            f"{pnl_emoji} 손익: {format_number(pnl)} KRW ({total_return:+.2f}%)\n"
+            f"📈 거래: {total_trades}건\n"
+            f"📋 포지션: {position}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━"
+        )
+        self.telegram.send(msg)
+        logger.info(f"{period} 요약 알림 전송")
+
+    def check_and_send_summary(self):
+        """요약 알림 시간 확인 및 전송"""
+        if not self.enable_summary_alerts:
+            return
+
+        now = get_kst_now()
+        current_time = (now.hour, now.minute)
+
+        for summary_hour, summary_minute in self.schedule.summary_times:
+            summary_key = f"{now.date()}_{summary_hour}_{summary_minute}"
+
+            # 이미 보냈으면 스킵
+            if summary_key in self.summary_sent:
+                continue
+
+            # 해당 시간이 되었는지 확인 (±2분 범위)
+            if now.hour == summary_hour and abs(now.minute - summary_minute) <= 2:
+                period = "점심" if summary_hour == 12 else "오후"
+                self.send_interim_summary(period)
+                self.summary_sent.add(summary_key)
+                break
+
     async def start_trading(self):
         """Paper Trading 시작"""
         logger.info("Paper Trading 시작...")
@@ -355,7 +424,9 @@ class PaperTradingService:
 
         # KIS 모의투자 API 설정
         kis_executor = None
-        futures_symbol = "101F26"  # 2026년 1월물 (근월물)
+        futures_symbol = self.futures_symbol  # 자동 감지된 근월물 코드
+        logger.info(f"거래 종목: {futures_symbol} (만기: {self.futures_info['front_month']['expiry']})")
+
         if self.use_kis_api:
             try:
                 from config.settings import settings
@@ -420,8 +491,25 @@ class PaperTradingService:
 
         logger.info(f"거래 시간: {duration_seconds}초 ({duration_seconds // 3600}시간 {(duration_seconds % 3600) // 60}분)")
 
+        # 요약 알림 체크 태스크
+        async def summary_checker():
+            """주기적으로 요약 알림 시간 체크"""
+            while self.engine and self.engine.is_running:
+                self.check_and_send_summary()
+                await asyncio.sleep(60)  # 1분마다 체크
+
         try:
+            # 거래 엔진과 요약 체크 태스크 동시 실행
+            summary_task = asyncio.create_task(summary_checker())
+
             await self.engine.start(duration_seconds=duration_seconds)
+
+            summary_task.cancel()
+            try:
+                await summary_task
+            except asyncio.CancelledError:
+                pass
+
         except Exception as e:
             self.send_error_notification(f"거래 중 에러: {e}")
             logger.error(f"거래 중 에러: {e}")
@@ -584,14 +672,31 @@ def main():
         action="store_true",
         help="KIS API 사용 안 함 (가상 브로커만 사용)"
     )
+    parser.add_argument(
+        "--no-summary",
+        action="store_true",
+        help="시간대별 요약 알림 비활성화"
+    )
+    parser.add_argument(
+        "--show-futures",
+        action="store_true",
+        help="현재 선물 정보 출력"
+    )
 
     args = parser.parse_args()
+
+    # 선물 정보 출력
+    if args.show_futures:
+        from src.common.futures_code import format_futures_info
+        print(format_futures_info())
+        return
 
     service = PaperTradingService(
         strategy=args.strategy,
         capital=args.capital,
         simulation=args.simulation,
         use_kis_api=not args.no_kis,
+        enable_summary_alerts=not args.no_summary,
     )
 
     # 텔레그램 테스트
