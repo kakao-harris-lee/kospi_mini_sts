@@ -10,11 +10,23 @@ VENV="$PROJECT_DIR/venv/bin/activate"
 
 mkdir -p "$PROJECT_DIR/logs"
 
+cd "$PROJECT_DIR"
+source "$VENV"
+
+# 거래일 확인 (공휴일/주말 체크)
+IS_TRADING_DAY=$(python3 -c "
+from datetime import date
+from src.collector.historical.calendar import is_trading_day
+print('1' if is_trading_day(date.today()) else '0')
+" 2>/dev/null || echo "0")
+
+if [ "$IS_TRADING_DAY" != "1" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 오늘은 휴장일입니다. 백필 스킵." >> "$LOG_FILE"
+    exit 0
+fi
+
 {
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') 백필 시작 ==="
-
-    cd "$PROJECT_DIR"
-    source "$VENV"
 
     # 오늘 데이터 수집
     sts backfill today
