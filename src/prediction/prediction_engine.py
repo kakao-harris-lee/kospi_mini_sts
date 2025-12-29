@@ -24,11 +24,12 @@ except ImportError:
 import sys
 from config.settings import settings
 from src.common import (
-    StreamConsumer, 
-    StreamPublisher, 
-    StreamMessage, 
+    StreamConsumer,
+    StreamPublisher,
+    StreamMessage,
     RedisClient,
-    setup_logging
+    setup_logging,
+    trading_logger
 )
 
 logger = setup_logging("prediction")
@@ -298,12 +299,28 @@ class PredictionEngine(StreamConsumer):
             sequence = self._prepare_sequence(features)
             if sequence is None:
                 return True  # 데이터 부족, 스킵
-            
+
+            # 상세 로깅: 예측 입력 데이터
+            if sequence is not None and len(features) > 0:
+                # 마지막 feature의 주요 값 요약
+                last_feature = features[-1] if features else {}
+                feature_summary = {
+                    'returns': last_feature.get('returns', 0),
+                    'rsi': last_feature.get('rsi', 50),
+                    'bb_position': last_feature.get('bb_position', 0.5),
+                    'volume_ratio': last_feature.get('volume_ratio', 1)
+                }
+                trading_logger.log_prediction_input(
+                    symbol=symbol,
+                    sequence_shape=sequence.shape,
+                    feature_summary=feature_summary
+                )
+
             # 3. 추론 실행
             start_time = time.time()
             probs = self.model_manager.predict(sequence)
             inference_time_ms = (time.time() - start_time) * 1000
-            
+
             if probs is None:
                 return True
             
@@ -318,6 +335,17 @@ class PredictionEngine(StreamConsumer):
                 inference_time_ms=inference_time_ms
             )
             
+            # 상세 로깅: 예측 결과
+            trading_logger.log_prediction_output(
+                symbol=result.symbol,
+                timestamp=result.timestamp,
+                up_prob=result.up_prob,
+                down_prob=result.down_prob,
+                hold_prob=result.hold_prob,
+                inference_time_ms=result.inference_time_ms,
+                model_version=result.model_version
+            )
+
             # 5. PREDICTION_STREAM에 발행
             self.publisher.publish({
                 'symbol': result.symbol,

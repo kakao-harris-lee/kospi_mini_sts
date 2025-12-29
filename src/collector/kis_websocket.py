@@ -29,7 +29,7 @@ if PROJECT_ROOT not in sys.path:
 
 from config.settings import settings
 from src.collector.data_collector import BaseAPIAdapter, TickData
-from src.common import setup_logging
+from src.common import setup_logging, trading_logger
 
 # 공유 토큰 모듈 import (WebSocket은 approval_key 사용하므로 참고용)
 try:
@@ -257,6 +257,9 @@ class KISWebSocketAdapter(BaseAPIAdapter):
     def _process_message(self, message: str):
         """수신 메시지 처리"""
         try:
+            # 상세 로깅: 원본 WebSocket 메시지
+            trading_logger.log_websocket_raw(message, parsed=True)
+
             # JSON 응답인지 확인
             if message.startswith('{'):
                 data = json.loads(message)
@@ -312,12 +315,17 @@ class KISWebSocketAdapter(BaseAPIAdapter):
                 symbol = item_fields[0]
 
                 tick = None
+                tick_type = "orderbook"
                 if tr_id == self.TR_FUTURES_ASK:
                     tick = self._parse_futures_ask(item, symbol)
+                    tick_type = "orderbook"
                 elif tr_id == self.TR_FUTURES_CNT:
                     tick = self._parse_futures_cnt(item, symbol)
+                    tick_type = "trade"
 
                 if tick and self._callback:
+                    # 상세 로깅: 수신된 틱 데이터
+                    trading_logger.log_tick_received(tick, tick_type)
                     self._callback(tick)
 
         except Exception as e:

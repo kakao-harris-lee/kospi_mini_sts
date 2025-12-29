@@ -27,6 +27,12 @@ from .telegram import (
     notify_success,
     get_notifier,
 )
+from .detailed_logger import (
+    trading_logger,
+    enable_detailed_logging,
+    disable_detailed_logging,
+    DetailedTradingLogger,
+)
 
 __all__ = [
     "RedisClient",
@@ -50,4 +56,8 @@ __all__ = [
     "notify_error",
     "notify_success",
     "get_notifier",
+    "trading_logger",
+    "enable_detailed_logging",
+    "disable_detailed_logging",
+    "DetailedTradingLogger",
 ]

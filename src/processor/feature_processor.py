@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import sys
 from config.settings import settings
-from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient, init_metrics, get_metrics, ClickHouseClient
+from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient, init_metrics, get_metrics, ClickHouseClient, trading_logger
 
 logger = setup_logging("processor")
 
@@ -487,7 +487,7 @@ class FeatureProcessor(StreamConsumer):
             ask_p1 = float(data.get('ask_price_1', 0))
             ask_q1 = float(data.get('ask_qty_1', 0))
             
-            state.ofi_calc.calculate_tick_ofi(
+            ofi_tick = state.ofi_calc.calculate_tick_ofi(
                 bid_p1, bid_q1, ask_p1, ask_q1, timestamp
             )
             ofi_z = state.ofi_calc.get_z_score()
@@ -528,7 +528,25 @@ class FeatureProcessor(StreamConsumer):
                 'ask_qty_total': sum(ask_qtys),
             }
 
+            # 상세 로깅: Feature 계산 결과
+            trading_logger.log_feature_calculated(
+                symbol=symbol,
+                timestamp=timestamp,
+                ofi_tick=ofi_tick,
+                ofi_z_score=ofi_z,
+                ofi_cumulative=ofi_cumulative,
+                liquidity_score=liquidity_score,
+                mid_price=mid_price,
+                spread=ask_p1 - bid_p1,
+                bid_total=sum(bid_qtys),
+                ask_total=sum(ask_qtys),
+                candle_completed=candle_1m is not None,
+                candle=candle_1m,
+                tech_features=None  # 아래에서 업데이트
+            )
+
             # 1분봉 완성 시 기술적 지표 계산 (학습 모델용 10개 feature)
+            tech_features = None
             if candle_1m:
                 feature['candle_1m'] = candle_1m
                 state.tech_indicators.add_candle(candle_1m)
@@ -537,10 +555,35 @@ class FeatureProcessor(StreamConsumer):
                     feature.update(tech_features)
                     logger.debug(f"Tech features calculated: RSI={tech_features['rsi']:.1f}")
 
+                    # 상세 로깅: 기술적 지표와 함께 다시 로깅
+                    trading_logger.log_feature_calculated(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        ofi_tick=ofi_tick,
+                        ofi_z_score=ofi_z,
+                        ofi_cumulative=ofi_cumulative,
+                        liquidity_score=liquidity_score,
+                        mid_price=mid_price,
+                        spread=ask_p1 - bid_p1,
+                        bid_total=sum(bid_qtys),
+                        ask_total=sum(ask_qtys),
+                        candle_completed=True,
+                        candle=candle_1m,
+                        tech_features=tech_features
+                    )
+
                     # 5. Rolling Window 업데이트 (Prediction Engine용)
                     # 기술적 지표가 있는 feature만 저장 (1분봉 단위)
                     state.feature_window.append(feature)
                     self._update_rolling_window(symbol, state.feature_window)
+
+                    # 상세 로깅: Rolling Window 업데이트
+                    features_with_tech = sum(1 for f in state.feature_window if 'returns' in f)
+                    trading_logger.log_rolling_window_update(
+                        symbol=symbol,
+                        window_size=len(state.feature_window),
+                        features_with_tech=features_with_tech
+                    )
             
             # 6. FEATURE_STREAM에 발행
             self.publisher.publish(feature)

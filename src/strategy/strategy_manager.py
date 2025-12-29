@@ -19,7 +19,8 @@ from src.common import (
     RedisClient,
     setup_logging,
     init_metrics,
-    get_metrics
+    get_metrics,
+    trading_logger
 )
 
 logger = setup_logging("strategy")
@@ -264,22 +265,74 @@ class StrategyManager(StreamConsumer):
             # 3. 모드 결정
             mode = self._determine_mode(liquidity_score, basis_gap, up_prob)
             self._mode_counts[mode] += 1
-            
+
+            # OFI Z-Score 조회 (상세 로깅용)
+            ofi_z_score = float(feature.get('ofi_z_score', 0))
+
+            # 상세 로깅: 전략 평가
+            trading_logger.log_strategy_evaluation(
+                symbol=symbol,
+                timestamp=time.time(),
+                up_prob=up_prob,
+                down_prob=down_prob,
+                liquidity_score=liquidity_score,
+                basis_gap=basis_gap,
+                ofi_z_score=ofi_z_score,
+                mode=mode.value,
+                feature_data=feature
+            )
+
             # 4. 모드별 실행
             order: Optional[OrderCommand] = None
-            
+
             if mode == TradingMode.AVOID:
                 logger.debug(f"{symbol}: AVOID mode (liquidity={liquidity_score:.1f})")
+                trading_logger.log_no_order(
+                    symbol=symbol,
+                    timestamp=time.time(),
+                    reason=f"AVOID mode - Low liquidity: {liquidity_score:.1f}"
+                )
                 # TODO: 기존 포지션 청산 로직
-                
+
             elif mode == TradingMode.MODE_A:
                 order = self._execute_mode_a(symbol, up_prob, down_prob, feature)
-                
+                if not order:
+                    trading_logger.log_no_order(
+                        symbol=symbol,
+                        timestamp=time.time(),
+                        reason=f"MODE_A - Probability threshold not met: up={up_prob:.3f}, down={down_prob:.3f}"
+                    )
+
             elif mode == TradingMode.MODE_B:
                 order = self._execute_mode_b(symbol, up_prob, down_prob, feature)
+                if not order:
+                    trading_logger.log_no_order(
+                        symbol=symbol,
+                        timestamp=time.time(),
+                        reason=f"MODE_B - Probability threshold not met: up={up_prob:.3f}, down={down_prob:.3f}"
+                    )
             
             # 5. 주문 실행
             if order:
+                # 상세 로깅: 주문 결정
+                trading_logger.log_order_decision(
+                    symbol=order.symbol,
+                    timestamp=order.timestamp,
+                    side=order.side.value,
+                    order_type=order.order_type.value,
+                    size=order.size,
+                    price=order.price,
+                    strategy_id=order.strategy_id,
+                    mode=order.mode.value,
+                    reason=f"Up={up_prob:.3f}, Down={down_prob:.3f}, LIQ={liquidity_score:.1f}",
+                    scores={
+                        'ofi_score': ofi_z_score,
+                        'liquidity_score': liquidity_score,
+                        'up_prob': up_prob,
+                        'down_prob': down_prob
+                    }
+                )
+
                 success = self.executor.execute(order)
                 metrics = get_metrics()
 
