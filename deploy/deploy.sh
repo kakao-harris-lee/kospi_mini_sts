@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # KOSPI Trading System - 배포 스크립트
-# Crontab 기반 프로세스 관리
+# Git 기반 배포 (push/pull 방식)
 # =============================================================================
 
 set -e
@@ -10,12 +10,14 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 설정
 DEPLOY_HOST="${DEPLOY_HOST:-deploy@chsvr.duckdns.org}"
 DEPLOY_PATH="${DEPLOY_PATH:-/home/deploy/project/kospi_mini_sts}"
 LOCAL_PATH="$(cd "$(dirname "$0")/.." && pwd)"
+GIT_BRANCH="${GIT_BRANCH:-main}"
 
 # =============================================================================
 # 헬퍼 함수
@@ -33,25 +35,36 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+log_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
+}
+
 show_help() {
     cat << EOF
 사용법: $0 [명령] [옵션]
 
 명령:
-    deploy          전체 배포 (코드 동기화 + 의존성 업데이트)
-    sync            코드만 동기화
-    setup           초기 설정 (venv, crontab 등록)
+    deploy          전체 배포 (git push + remote pull + 의존성 업데이트)
+    push            로컬 변경사항 push (commit은 별도로 해야 함)
+    pull            서버에서 git pull 실행
+    setup           초기 설정 (git clone, venv, crontab 등록)
     install-deps    의존성 설치
-    status          상태 확인 (cron, 프로세스)
+    status          상태 확인 (git, cron, 프로세스)
     logs            최근 로그 확인
 
 옵션:
     -h, --help      도움말 출력
 
 예시:
-    $0 deploy       # 전체 배포
+    $0 deploy       # 전체 배포 (push → pull → deps)
+    $0 push         # 로컬에서 push만
+    $0 pull         # 서버에서 pull만
     $0 status       # 상태 확인
-    $0 logs         # 로그 확인
+
+배포 워크플로우:
+    1. 로컬에서 변경사항 커밋: git add . && git commit -m "message"
+    2. 배포 실행: ./deploy/deploy.sh deploy
+       - 또는 수동: ./deploy/deploy.sh push && ./deploy/deploy.sh pull
 EOF
 }
 
@@ -64,32 +77,64 @@ remote_exec() {
 }
 
 # =============================================================================
-# 배포 함수
+# Git 관련 함수
 # =============================================================================
 
-sync_code() {
-    log_info "코드 동기화 중..."
+check_git_status() {
+    log_step "로컬 Git 상태 확인..."
 
-    rsync -avz --delete \
-        --exclude '.git' \
-        --exclude '__pycache__' \
-        --exclude '*.pyc' \
-        --exclude '.pytest_cache' \
-        --exclude 'venv' \
-        --exclude '.env' \
-        --exclude 'logs' \
-        --exclude 'pids' \
-        --exclude '*.egg-info' \
-        --exclude '.mypy_cache' \
-        --exclude '.ruff_cache' \
-        --exclude '.claude' \
-        "$LOCAL_PATH/" "$DEPLOY_HOST:$DEPLOY_PATH/"
+    cd "$LOCAL_PATH"
 
-    log_info "코드 동기화 완료"
+    # uncommitted 변경사항 확인
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        log_warn "커밋되지 않은 변경사항이 있습니다:"
+        git status --short
+        echo ""
+        read -p "계속 진행하시겠습니까? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            log_error "배포 취소됨"
+            exit 1
+        fi
+    fi
+
+    # 현재 브랜치 확인
+    current_branch=$(git branch --show-current)
+    if [ "$current_branch" != "$GIT_BRANCH" ]; then
+        log_warn "현재 브랜치: $current_branch (배포 브랜치: $GIT_BRANCH)"
+    fi
 }
 
+git_push() {
+    log_step "Git push 실행 중..."
+
+    cd "$LOCAL_PATH"
+
+    # remote 확인
+    if ! git remote | grep -q origin; then
+        log_error "Git remote 'origin'이 설정되지 않았습니다"
+        exit 1
+    fi
+
+    # push
+    git push origin "$GIT_BRANCH"
+
+    log_info "Push 완료: $GIT_BRANCH"
+}
+
+git_pull_remote() {
+    log_step "서버에서 Git pull 실행 중..."
+
+    remote_exec "cd $DEPLOY_PATH && git pull origin $GIT_BRANCH"
+
+    log_info "서버 Pull 완료"
+}
+
+# =============================================================================
+# 설정 함수
+# =============================================================================
+
 setup_venv() {
-    log_info "Python 가상환경 설정 중..."
+    log_step "Python 가상환경 설정 중..."
 
     remote_exec "cd $DEPLOY_PATH && \
         python3 -m venv venv && \
@@ -101,13 +146,13 @@ setup_venv() {
 }
 
 setup_dirs() {
-    log_info "디렉토리 생성 중..."
+    log_step "디렉토리 생성 중..."
     remote_exec "mkdir -p $DEPLOY_PATH/logs $DEPLOY_PATH/pids"
     log_info "디렉토리 생성 완료"
 }
 
 install_crontab() {
-    log_info "Crontab 등록 중..."
+    log_step "Crontab 등록 중..."
 
     # 기존 crontab 백업 및 kospi 관련 항목 제거 후 추가
     remote_exec "
@@ -133,8 +178,39 @@ CRON_EOF
     log_info "Crontab 등록 완료"
 }
 
+install_deps() {
+    log_step "의존성 업데이트 중..."
+    remote_exec "cd $DEPLOY_PATH && source venv/bin/activate && pip install -e '.[all]' -q"
+    log_info "의존성 업데이트 완료"
+}
+
+# =============================================================================
+# 상태 확인 함수
+# =============================================================================
+
 show_status() {
     log_info "=== 상태 확인 ==="
+    echo ""
+
+    # 로컬 Git 상태
+    log_info "로컬 Git 상태:"
+    cd "$LOCAL_PATH"
+    echo "  브랜치: $(git branch --show-current)"
+    echo "  최근 커밋: $(git log -1 --format='%h %s' 2>/dev/null)"
+    local_changes=$(git status --porcelain | wc -l | tr -d ' ')
+    if [ "$local_changes" -gt 0 ]; then
+        echo -e "  변경사항: ${YELLOW}${local_changes}개 파일${NC}"
+    else
+        echo -e "  변경사항: ${GREEN}없음${NC}"
+    fi
+    echo ""
+
+    # 서버 Git 상태
+    log_info "서버 Git 상태:"
+    remote_exec "cd $DEPLOY_PATH && \
+        echo \"  브랜치: \$(git branch --show-current)\" && \
+        echo \"  최근 커밋: \$(git log -1 --format='%h %s')\" && \
+        echo \"  변경사항: \$(git status --porcelain | wc -l | tr -d ' ')개 파일\""
     echo ""
 
     # Crontab 확인
@@ -190,34 +266,66 @@ show_logs() {
 }
 
 # =============================================================================
+# 초기 설정 (git clone)
+# =============================================================================
+
+setup_git_clone() {
+    log_step "서버에 Git repository 설정 중..."
+
+    # repository URL 가져오기
+    cd "$LOCAL_PATH"
+    repo_url=$(git remote get-url origin)
+
+    remote_exec "
+        if [ -d $DEPLOY_PATH/.git ]; then
+            echo 'Git repository가 이미 존재합니다'
+        else
+            mkdir -p $(dirname $DEPLOY_PATH)
+            git clone $repo_url $DEPLOY_PATH
+        fi
+    "
+
+    log_info "Git repository 설정 완료"
+}
+
+# =============================================================================
 # 메인 명령어 처리
 # =============================================================================
 
-case "${1:-deploy}" in
+case "${1:-}" in
     deploy)
         log_info "=== 전체 배포 시작 ==="
-        sync_code
+        check_git_status
+        git_push
+        git_pull_remote
         setup_dirs
 
         # venv가 없으면 생성, 있으면 의존성만 업데이트
         if ! remote_exec "test -d $DEPLOY_PATH/venv"; then
             setup_venv
         else
-            log_info "의존성 업데이트 중..."
-            remote_exec "cd $DEPLOY_PATH && source venv/bin/activate && pip install -e '.[all]' -q"
+            install_deps
         fi
 
         log_info "=== 배포 완료 ==="
         show_status
         ;;
 
-    sync)
-        sync_code
+    push)
+        check_git_status
+        git_push
+        ;;
+
+    pull)
+        git_pull_remote
         ;;
 
     setup)
         log_info "=== 초기 설정 시작 ==="
-        sync_code
+        check_git_status
+        git_push
+        setup_git_clone
+        git_pull_remote
         setup_dirs
         setup_venv
         install_crontab
@@ -230,7 +338,7 @@ case "${1:-deploy}" in
         ;;
 
     install-deps)
-        setup_venv
+        install_deps
         ;;
 
     status)
@@ -243,6 +351,13 @@ case "${1:-deploy}" in
 
     -h|--help|help)
         show_help
+        ;;
+
+    "")
+        log_error "명령을 지정해주세요"
+        echo ""
+        show_help
+        exit 1
         ;;
 
     *)

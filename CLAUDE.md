@@ -132,16 +132,27 @@ This project uses **KIS "Short Codes"** which represent relative maturity positi
 
 ### Server & Deployment
 
+**Deployment Rules:**
+* **Automatic server deployment is prohibited.**
+* **SSH/rsync bulk file transfers are prohibited.**
+* **Source code sync must be done via `git pull` on the target server.**
+
+**Server Info:**
 * **Host:** `chsvr.duckdns.org` (User: `deploy`)
 * **Paths:** `/home/deploy/project/kospi_mini_sts/`
 * **Services:** Redis (6379), ClickHouse (9000/8123).
-* **Deploy Script:**
 
+**Deployment Process:**
 ```bash
-./deploy/deploy.sh setup    # First time (sync + venv + cron)
-./deploy/deploy.sh deploy   # Update code (sync + deps)
-./deploy/deploy.sh sync     # Code sync only
-./deploy/deploy.sh status   # Check cron & process status
+# 전체 배포 (push → pull → deps)
+./deploy/deploy.sh deploy
+
+# 개별 명령
+./deploy/deploy.sh push         # 로컬에서 push만
+./deploy/deploy.sh pull         # 서버에서 pull만
+./deploy/deploy.sh setup        # 초기 설정 (git clone + venv + cron)
+./deploy/deploy.sh status       # 상태 확인 (git, cron, 프로세스)
+./deploy/deploy.sh logs         # 최근 로그 확인
 ```
 
 ### Automation (Crontab-based)
