@@ -136,6 +136,7 @@ This project uses **KIS "Short Codes"** which represent relative maturity positi
 * **Automatic server deployment is prohibited.**
 * **SSH/rsync bulk file transfers are prohibited.**
 * **Source code sync must be done via `git pull` on the target server.**
+* **Always run and test on local machine first. Server configuration is handled manually by user.**
 
 **Server Info:**
 * **Host:** `chsvr.duckdns.org` (User: `deploy`)
