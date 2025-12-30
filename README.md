@@ -175,33 +175,6 @@ python scripts/paper_trading_service.py --test-notification
 
 ---
 
-## 서버 배포
-
-### 서버 정보
-
-- **호스트**: `deploy@chsvr.duckdns.org`
-- **배포 경로**: `/home/deploy/project/kospi_mini_sts/`
-
-### 배포 명령어
-
-```bash
-# 전체 프로젝트 배포 (로컬에서 실행)
-rsync -avz --delete \
-  --exclude '.git' --exclude '__pycache__' --exclude '*.pyc' \
-  --exclude 'venv' --exclude '.env' --exclude '.history' --exclude 'logs' \
-  ./ deploy@chsvr.duckdns.org:/home/deploy/project/kospi_mini_sts/
-
-# 또는 배포 스크립트 사용
-cd deploy
-./deploy.sh setup    # 초기 설정 (최초 1회)
-./deploy.sh deploy   # 전체 배포
-./deploy.sh start    # 서비스 시작
-./deploy.sh stop     # 서비스 중지
-./deploy.sh status   # 상태 확인
-```
-
----
-
 ## 개발
 
 ### 코드 스타일

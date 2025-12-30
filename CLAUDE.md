@@ -133,17 +133,19 @@ This project uses **KIS "Short Codes"** which represent relative maturity positi
 ### Server & Deployment
 
 **Deployment Rules:**
+
 * **Automatic server deployment is prohibited.**
 * **SSH/rsync bulk file transfers are prohibited.**
 * **Source code sync must be done via `git pull` on the target server.**
 * **Always run and test on local machine first. Server configuration is handled manually by user.**
 
 **Server Info:**
-* **Host:** `chsvr.duckdns.org` (User: `deploy`)
+
 * **Paths:** `/home/deploy/project/kospi_mini_sts/`
 * **Services:** Redis (6379), ClickHouse (9000/8123).
 
 **Deployment Process:**
+
 ```bash
 # 전체 배포 (push → pull → deps)
 ./deploy/deploy.sh deploy
