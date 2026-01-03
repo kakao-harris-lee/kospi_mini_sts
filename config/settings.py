@@ -118,6 +118,28 @@ class MockPredictionConfig:
 
 
 @dataclass
+class ResilienceConfig:
+    """Resilience settings (v0.0.3) - Circuit Breaker, Backpressure, State Snapshot"""
+    # Circuit Breaker
+    circuit_breaker_enabled: bool = os.getenv("CIRCUIT_BREAKER_ENABLED", "true").lower() == "true"
+    circuit_breaker_failure_threshold: int = int(os.getenv("CIRCUIT_BREAKER_FAILURES", "5"))
+    circuit_breaker_recovery_timeout: float = float(os.getenv("CIRCUIT_BREAKER_RECOVERY", "60.0"))
+
+    # Backpressure
+    backpressure_warning_lag: int = int(os.getenv("BACKPRESSURE_WARNING", "1000"))
+    backpressure_critical_lag: int = int(os.getenv("BACKPRESSURE_CRITICAL", "5000"))
+    backpressure_emergency_lag: int = int(os.getenv("BACKPRESSURE_EMERGENCY", "8000"))
+
+    # State Snapshots
+    state_snapshot_enabled: bool = os.getenv("STATE_SNAPSHOT_ENABLED", "true").lower() == "true"
+    state_snapshot_interval: float = float(os.getenv("STATE_SNAPSHOT_INTERVAL", "60.0"))
+    state_snapshot_ttl: int = int(os.getenv("STATE_SNAPSHOT_TTL", "21600"))  # 6 hours
+
+    # Contract Validation: disabled | warn | strict
+    contract_validation_mode: str = os.getenv("CONTRACT_VALIDATION_MODE", "warn")
+
+
+@dataclass
 class Settings:
     kis: KISConfig = field(default_factory=KISConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
@@ -126,6 +148,7 @@ class Settings:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
     mock_prediction: MockPredictionConfig = field(default_factory=MockPredictionConfig)  # v0.0.2
+    resilience: ResilienceConfig = field(default_factory=ResilienceConfig)  # v0.0.3
 
     # 로깅 레벨
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

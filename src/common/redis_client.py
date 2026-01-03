@@ -1,17 +1,47 @@
 """
 Redis 클라이언트 및 Stream 유틸리티
+
+Features:
+- Connection management (singleton)
+- Stream publishing with distributed tracing
+- Consumer groups with PEL handling
+- Correlation ID propagation for debugging
 """
 import redis
 import json
 import logging
+import time
+import uuid
+import threading
 from typing import Optional, Dict, Any, List, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
 import sys
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Thread-local storage for correlation ID
+_trace_context = threading.local()
+
+
+def set_correlation_id(corr_id: str):
+    """Set correlation ID for current thread"""
+    _trace_context.correlation_id = corr_id
+
+
+def get_correlation_id() -> str:
+    """Get correlation ID for current thread (generates new if not set)"""
+    if not hasattr(_trace_context, 'correlation_id') or _trace_context.correlation_id is None:
+        _trace_context.correlation_id = str(uuid.uuid4())[:8]
+    return _trace_context.correlation_id
+
+
+def clear_correlation_id():
+    """Clear correlation ID for current thread"""
+    _trace_context.correlation_id = None
 
 
 class RedisClient:
@@ -43,15 +73,35 @@ class RedisClient:
 
 @dataclass
 class StreamMessage:
-    """Stream 메시지 래퍼"""
+    """
+    Stream 메시지 래퍼 with distributed tracing support
+
+    Attributes:
+        id: Redis message ID
+        data: Parsed message data
+        stream: Stream name
+        correlation_id: Trace ID for distributed tracing
+        parent_id: Parent message's correlation ID (for lineage)
+        timestamp: Message creation timestamp
+    """
     id: str
     data: Dict[str, Any]
     stream: str
-    
+    correlation_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    parent_id: Optional[str] = None
+    timestamp: float = field(default_factory=time.time)
+
     @classmethod
     def from_raw(cls, stream: str, msg_id: str, fields: Dict[str, str]) -> "StreamMessage":
-        # JSON 필드 자동 파싱
+        """Parse raw Redis message with tracing metadata"""
         parsed = {}
+
+        # Extract tracing metadata
+        correlation_id = fields.pop('_corr_id', None) or str(uuid.uuid4())[:8]
+        parent_id = fields.pop('_parent_id', None) or None
+        timestamp = float(fields.pop('_ts', 0)) or time.time()
+
+        # JSON 필드 자동 파싱
         for k, v in fields.items():
             if k.endswith('_json'):
                 try:
@@ -60,37 +110,109 @@ class StreamMessage:
                     parsed[k] = v
             else:
                 parsed[k] = v
-        return cls(id=msg_id, data=parsed, stream=stream)
+
+        return cls(
+            id=msg_id,
+            data=parsed,
+            stream=stream,
+            correlation_id=correlation_id,
+            parent_id=parent_id if parent_id else None,
+            timestamp=timestamp
+        )
+
+    def create_child_id(self) -> str:
+        """Create a new correlation ID that references this message as parent"""
+        return f"{self.correlation_id}-{str(uuid.uuid4())[:4]}"
+
+    def get_trace_dict(self) -> Dict[str, str]:
+        """Get tracing metadata for publishing downstream"""
+        return {
+            '_corr_id': self.correlation_id,
+            '_parent_id': self.parent_id or '',
+            '_ts': str(self.timestamp)
+        }
+
+    def __repr__(self) -> str:
+        return f"StreamMessage(id={self.id}, corr={self.correlation_id}, stream={self.stream})"
 
 
 class StreamPublisher:
-    """Stream에 데이터 발행"""
-    
+    """
+    Stream에 데이터 발행 with distributed tracing support
+
+    Usage:
+        publisher = StreamPublisher("FEATURE_STREAM")
+
+        # Simple publish (auto-generates correlation ID)
+        publisher.publish({"symbol": "101V3000", ...})
+
+        # Publish with parent tracing (for pipeline)
+        publisher.publish(data, parent_message=input_msg)
+    """
+
     def __init__(self, stream_name: str, maxlen: int = None):
         self.stream = stream_name
         self.maxlen = maxlen or settings.redis.stream_maxlen
         self.client = RedisClient.get_client()
-    
-    def publish(self, data: Dict[str, Any]) -> str:
+        self._publish_count = 0
+
+    def publish(
+        self,
+        data: Dict[str, Any],
+        correlation_id: str = None,
+        parent_message: StreamMessage = None
+    ) -> str:
         """
-        데이터를 Stream에 추가
-        Returns: 메시지 ID
+        데이터를 Stream에 추가 with tracing metadata
+
+        Args:
+            data: Message data
+            correlation_id: Override correlation ID (auto-generated if None)
+            parent_message: Parent message for lineage tracking
+
+        Returns:
+            Redis message ID
         """
-        # 딕셔너리/리스트는 JSON으로 변환
         processed = {}
+
+        # Add tracing metadata
+        if parent_message:
+            # Inherit parent's correlation ID for lineage
+            processed['_corr_id'] = parent_message.correlation_id
+            processed['_parent_id'] = parent_message.id
+        else:
+            processed['_corr_id'] = correlation_id or get_correlation_id()
+            processed['_parent_id'] = ''
+
+        processed['_ts'] = str(time.time())
+
+        # 딕셔너리/리스트는 JSON으로 변환
         for k, v in data.items():
             if isinstance(v, (dict, list)):
                 processed[f"{k}_json"] = json.dumps(v)
             else:
                 processed[k] = str(v) if v is not None else ""
-        
+
         msg_id = self.client.xadd(
             self.stream,
             processed,
             maxlen=self.maxlen
         )
-        logger.debug(f"Published to {self.stream}: {msg_id}")
+
+        self._publish_count += 1
+        logger.debug(
+            f"Published to {self.stream}: {msg_id} "
+            f"[corr={processed['_corr_id']}]"
+        )
         return msg_id
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get publisher statistics"""
+        return {
+            "stream": self.stream,
+            "publish_count": self._publish_count,
+            "maxlen": self.maxlen
+        }
 
 
 class StreamConsumer(ABC):

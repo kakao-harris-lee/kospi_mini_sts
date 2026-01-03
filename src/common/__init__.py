@@ -34,30 +34,105 @@ from .detailed_logger import (
     DetailedTradingLogger,
 )
 
+# Architecture improvements (v0.0.3)
+from .circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitState,
+    CircuitOpenError,
+    get_kis_api_breaker,
+    get_kis_websocket_breaker,
+    get_clickhouse_breaker,
+    get_redis_breaker,
+)
+from .backpressure import (
+    BackpressureMonitor,
+    LagThresholds,
+    LagInfo,
+    get_backpressure_monitor,
+)
+from .state_snapshot import (
+    StateSnapshotManager,
+    SnapshotConfig,
+    SnapshotMetadata,
+    PeriodicSnapshotSaver,
+    create_processor_snapshot_manager,
+)
+from .stream_contracts import (
+    StreamContract,
+    FieldSpec,
+    ValidationMode,
+    ContractValidationError,
+    validate_message,
+    get_contract,
+    set_validation_mode,
+    RAW_DATA_CONTRACT,
+    FEATURE_CONTRACT,
+    PREDICTION_CONTRACT,
+    ORDER_COMMAND_CONTRACT,
+)
+
 __all__ = [
+    # Redis
     "RedisClient",
     "StreamPublisher",
     "StreamConsumer",
     "MultiStreamConsumer",
     "StreamMessage",
+    # ClickHouse
     "ClickHouseClient",
     "BatchInserter",
     "BatchConfig",
     "init_tables",
+    # Logging
     "setup_logging",
     "MetricsLogger",
     "TradingMetrics",
     "get_metrics",
     "init_metrics",
     "REGISTRY",
+    # Telegram
     "TelegramNotifier",
     "send_message",
     "notify",
     "notify_error",
     "notify_success",
     "get_notifier",
+    # Detailed logging
     "trading_logger",
     "enable_detailed_logging",
     "disable_detailed_logging",
     "DetailedTradingLogger",
+    # Circuit Breaker
+    "CircuitBreaker",
+    "CircuitBreakerConfig",
+    "CircuitState",
+    "CircuitOpenError",
+    "get_kis_api_breaker",
+    "get_kis_websocket_breaker",
+    "get_clickhouse_breaker",
+    "get_redis_breaker",
+    # Backpressure
+    "BackpressureMonitor",
+    "LagThresholds",
+    "LagInfo",
+    "get_backpressure_monitor",
+    # State Snapshot
+    "StateSnapshotManager",
+    "SnapshotConfig",
+    "SnapshotMetadata",
+    "PeriodicSnapshotSaver",
+    "create_processor_snapshot_manager",
+    # Stream Contracts
+    "StreamContract",
+    "FieldSpec",
+    "ValidationMode",
+    "ContractValidationError",
+    "validate_message",
+    "get_contract",
+    "set_validation_mode",
+    "RAW_DATA_CONTRACT",
+    "FEATURE_CONTRACT",
+    "PREDICTION_CONTRACT",
+    "ORDER_COMMAND_CONTRACT",
 ]
