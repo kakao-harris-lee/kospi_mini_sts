@@ -1,0 +1,27 @@
+{
+  "model_type": "cnn-lstm",
+  "input_dim": 10,
+  "seq_len": 60,
+  "horizon": 5,
+  "threshold": 0.001,
+  "features": [
+    "returns",
+    "ma_ratio_5",
+    "ma_ratio_10",
+    "ma_ratio_20",
+    "rsi",
+    "bb_position",
+    "volume_ratio",
+    "volatility",
+    "hl_range",
+    "candle_body"
+  ],
+  "created_at": "2026-01-05T20:27:27.360612",
+  "train_samples": 4693,
+  "val_samples": 1129,
+  "cnn_channels": [
+    32,
+    64
+  ],
+  "kernel_size": 3
+}

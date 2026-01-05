@@ -39,7 +39,14 @@ Thumbs.db
 *.csv
 *.zip
 *.parquet
+*.tar.gz
+*.db
 keggle/
+data/
+
+# Runtime artifacts
+pids/
+*.pid
 
 # Secrets
 credentials.json

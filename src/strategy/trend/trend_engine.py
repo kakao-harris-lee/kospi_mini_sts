@@ -10,7 +10,7 @@ Main orchestrator that combines:
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 from .technical_indicators import TechnicalCalculator, TechnicalData
 from .ensemble_filter import EnsembleFilter, FilterResult
@@ -220,6 +220,122 @@ class TrendEngine:
             price=current_price,
             size=0,
             reason=filter_result.rejection_reason or "No signal",
+            technical_data=tech,
+        )
+
+    def check_multi_horizon(
+        self,
+        horizon_probs: Dict[int, float],
+        current_price: float,
+        symbol: str = "",
+        timestamp: Optional[float] = None,
+    ) -> TrendSignal:
+        """
+        Multi-horizon check function using "Shortest Confirms Longest" strategy.
+
+        h10 sets direction, h1/h3 confirm timing.
+
+        Args:
+            horizon_probs: {1: up_prob, 3: up_prob, 5: up_prob, 10: up_prob}
+            current_price: Current market price
+            symbol: Trading symbol
+            timestamp: Current timestamp
+
+        Returns:
+            TrendSignal with action to take
+        """
+        self._stats['total_checks'] += 1
+        timestamp = timestamp or time.time()
+
+        # Get current technical data
+        tech = self.technical.get_current_data()
+        if tech is None:
+            return TrendSignal(
+                timestamp=timestamp,
+                action="HOLD",
+                direction=None,
+                price=current_price,
+                size=0,
+                reason="Technical data not available",
+            )
+
+        current_atr = tech.atr
+
+        # If we have a position, check for exit
+        if self.position_manager.has_position:
+            exit_signal = self.position_manager.update_and_check_exit(
+                current_price=current_price,
+                current_atr=current_atr,
+                current_time=timestamp,
+            )
+
+            if exit_signal.should_exit:
+                return self._create_exit_signal(exit_signal, timestamp, tech)
+
+            # Check for DL-based exit (h10 reversal)
+            h10 = horizon_probs.get(10, 0.5)
+            pos_side = self.position_manager.position_side.value
+            if pos_side == "LONG" and h10 < 0.40:
+                # h10 reversed bearish - exit long
+                exit_signal = ExitSignal(
+                    should_exit=True,
+                    reason=ExitReason.DL_REVERSAL,
+                    exit_price=current_price,
+                    message=f"H10 reversal: {h10:.1%} < 40%",
+                )
+                return self._create_exit_signal(exit_signal, timestamp, tech)
+            elif pos_side == "SHORT" and h10 > 0.60:
+                # h10 reversed bullish - exit short
+                exit_signal = ExitSignal(
+                    should_exit=True,
+                    reason=ExitReason.DL_REVERSAL,
+                    exit_price=current_price,
+                    message=f"H10 reversal: {h10:.1%} > 60%",
+                )
+                return self._create_exit_signal(exit_signal, timestamp, tech)
+
+            # Position OK, hold
+            return TrendSignal(
+                timestamp=timestamp,
+                action="HOLD",
+                direction=pos_side,
+                price=current_price,
+                size=0,
+                reason="Position held",
+                technical_data=tech,
+            )
+
+        # No position - check for entry
+        if not tech.is_ready:
+            return TrendSignal(
+                timestamp=timestamp,
+                action="HOLD",
+                direction=None,
+                price=current_price,
+                size=0,
+                reason=f"Warming up: {len(self.technical.price_history)}/{self.min_bars_required} bars",
+                technical_data=tech,
+            )
+
+        # Check multi-horizon ensemble filter
+        filter_result = self.ensemble_filter.check_entry_multi_horizon(horizon_probs, tech)
+
+        if filter_result.can_enter:
+            return self._create_entry_signal(
+                filter_result=filter_result,
+                tech=tech,
+                symbol=symbol,
+                timestamp=timestamp,
+            )
+
+        # No entry
+        return TrendSignal(
+            timestamp=timestamp,
+            action="HOLD",
+            direction=None,
+            price=current_price,
+            size=0,
+            reason=filter_result.rejection_reason or "No multi-horizon signal",
             technical_data=tech,
         )
 

@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # Single model training (default)
+  trainer:
+    build: .
+    container_name: kospi-cnn-lstm-trainer
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - EPOCHS=100
+      - BATCH_SIZE=64
+      - MODEL_TYPE=cnn-lstm
+      - ENSEMBLE=false
+    command: ./train.sh
+
+  # Ensemble training (4 horizon models)
+  trainer-ensemble:
+    build: .
+    container_name: kospi-ensemble-trainer
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - EPOCHS=100
+      - BATCH_SIZE=64
+      - MODEL_TYPE=cnn-lstm
+      - ENSEMBLE=true
+    command: ./train.sh

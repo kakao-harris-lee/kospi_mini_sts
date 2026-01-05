@@ -31,6 +31,7 @@ from src.common import (
     setup_logging,
     trading_logger
 )
+from src.prediction.ensemble_predictor import EnsemblePredictor, EnsembleSignal
 
 logger = setup_logging("prediction")
 
@@ -92,6 +93,81 @@ if TORCH_AVAILABLE:
             logits = self.fc(context)
             return logits
 
+    class TradingCNNLSTM(nn.Module):
+        """
+        CNN-LSTM 기반 가격 방향 예측 모델
+
+        CNN: 로컬 시계열 패턴 추출 (모멘텀, 단기 트렌드)
+        LSTM: 장기 의존성 학습
+        Attention: 중요 시점 가중치
+        """
+
+        def __init__(
+            self,
+            input_dim: int = 10,
+            hidden_dim: int = 64,
+            num_layers: int = 2,
+            num_classes: int = 3,
+            dropout: float = 0.2,
+            cnn_channels: tuple = (32, 64),
+            kernel_size: int = 3
+        ):
+            super().__init__()
+
+            self.input_dim = input_dim
+            self.cnn_channels = cnn_channels
+            self.kernel_size = kernel_size
+
+            # CNN Block: 로컬 패턴 추출
+            self.cnn = nn.Sequential(
+                nn.Conv1d(input_dim, cnn_channels[0], kernel_size=kernel_size, padding=1),
+                nn.BatchNorm1d(cnn_channels[0]),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Conv1d(cnn_channels[0], cnn_channels[1], kernel_size=kernel_size, padding=1),
+                nn.BatchNorm1d(cnn_channels[1]),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.MaxPool1d(kernel_size=2, stride=2)
+            )
+
+            # LSTM
+            self.lstm = nn.LSTM(
+                cnn_channels[1],
+                hidden_dim,
+                num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0,
+                bidirectional=False
+            )
+
+            # Attention
+            self.attention = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.Tanh(),
+                nn.Linear(hidden_dim // 2, 1),
+                nn.Softmax(dim=1)
+            )
+
+            # Classification head
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_dim, 32),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(32, num_classes)
+            )
+
+        def forward(self, x):
+            # x: (batch, seq_len, features)
+            x = x.transpose(1, 2)  # (batch, features, seq_len)
+            x = self.cnn(x)  # (batch, cnn_channels[1], seq_len // 2)
+            x = x.transpose(1, 2)  # (batch, seq_len // 2, cnn_channels[1])
+            lstm_out, _ = self.lstm(x)
+            attn_weights = self.attention(lstm_out)
+            context = torch.sum(attn_weights * lstm_out, dim=1)
+            logits = self.fc(context)
+            return logits
+
 
 @dataclass
 class PredictionResult:
@@ -116,6 +192,7 @@ class ModelManager:
         self.model = None
         self.model_version = settings.model.model_version
         self.input_dim = 10  # 기본 Feature 수
+        self.model_type = "lstm"  # 기본값 (하위 호환)
 
         if not TORCH_AVAILABLE:
             logger.warning("PyTorch not available. Using mock predictions.")
@@ -143,19 +220,33 @@ class ModelManager:
             return
 
         try:
-            # 메타데이터 파일에서 input_dim 읽기
+            # 메타데이터 파일에서 모델 설정 읽기
             meta_path = self.model_path.replace('.pth', '.json')
+            cnn_channels = (32, 64)
+            kernel_size = 3
             try:
                 import json
                 with open(meta_path, 'r') as f:
                     meta = json.load(f)
                     self.input_dim = meta.get('input_dim', 10)
-                    logger.info(f"Model metadata loaded: input_dim={self.input_dim}")
+                    self.model_type = meta.get('model_type', 'lstm')  # 하위 호환
+                    cnn_channels = tuple(meta.get('cnn_channels', [32, 64]))
+                    kernel_size = meta.get('kernel_size', 3)
+                    logger.info(f"Model metadata loaded: type={self.model_type}, input_dim={self.input_dim}")
             except FileNotFoundError:
                 logger.warning(f"Model metadata not found: {meta_path}")
 
-            # 모델 아키텍처 생성
-            self.model = TradingLSTM(input_dim=self.input_dim)
+            # 모델 아키텍처 생성 (model_type에 따라)
+            if self.model_type == "cnn-lstm":
+                self.model = TradingCNNLSTM(
+                    input_dim=self.input_dim,
+                    cnn_channels=cnn_channels,
+                    kernel_size=kernel_size
+                )
+                logger.info("Using CNN-LSTM model")
+            else:
+                self.model = TradingLSTM(input_dim=self.input_dim)
+                logger.info("Using LSTM model")
 
             # 가중치 로드 (파일이 있는 경우)
             try:
@@ -224,19 +315,36 @@ class PredictionEngine(StreamConsumer):
         )
         self.publisher = StreamPublisher(settings.redis.prediction_stream)
         self.redis = RedisClient.get_client()
-        
-        # 모델 매니저
-        self.model_manager = ModelManager()
+
+        # Ensemble or single model
+        self.use_ensemble = settings.model.use_ensemble
+        if self.use_ensemble:
+            horizons = [int(h) for h in settings.model.ensemble_horizons.split(",")]
+            self.ensemble_predictor = EnsemblePredictor(
+                model_dir=settings.model.ensemble_dir,
+                horizons=horizons,
+                device=settings.model.device
+            )
+            self.model_manager = None
+            logger.info(f"Using ensemble mode with horizons: {horizons}")
+        else:
+            self.model_manager = ModelManager()
+            self.ensemble_predictor = None
+            logger.info("Using single model mode")
+
         self.lookback = settings.model.lookback_window
-        
+
         self._inference_count = 0
         self._total_inference_time = 0.0
     
     def start(self):
         """Prediction Engine 시작"""
         # 모델 로드
-        self.model_manager.load_model()
-        
+        if self.use_ensemble:
+            self.ensemble_predictor.load_models()
+        else:
+            self.model_manager.load_model()
+
         # Consumer 루프 시작
         self.run()
     
@@ -318,61 +426,100 @@ class PredictionEngine(StreamConsumer):
 
             # 3. 추론 실행
             start_time = time.time()
-            probs = self.model_manager.predict(sequence)
-            inference_time_ms = (time.time() - start_time) * 1000
 
-            if probs is None:
-                return True
-            
-            # 4. 결과 구성
-            result = PredictionResult(
-                symbol=symbol,
-                timestamp=time.time(),
-                hold_prob=float(probs[0]),
-                up_prob=float(probs[1]),
-                down_prob=float(probs[2]),
-                model_version=self.model_manager.model_version,
-                inference_time_ms=inference_time_ms
-            )
-            
-            # 상세 로깅: 예측 결과
-            trading_logger.log_prediction_output(
-                symbol=result.symbol,
-                timestamp=result.timestamp,
-                up_prob=result.up_prob,
-                down_prob=result.down_prob,
-                hold_prob=result.hold_prob,
-                inference_time_ms=result.inference_time_ms,
-                model_version=result.model_version
-            )
+            if self.use_ensemble:
+                # Ensemble mode: multi-horizon predictions
+                ensemble_probs = self.ensemble_predictor.predict(sequence)
+                signal = self.ensemble_predictor.get_signal(sequence)
+                inference_time_ms = (time.time() - start_time) * 1000
 
-            # 5. PREDICTION_STREAM에 발행
-            self.publisher.publish({
-                'symbol': result.symbol,
-                'timestamp': result.timestamp,
-                'up_prob': result.up_prob,
-                'down_prob': result.down_prob,
-                'hold_prob': result.hold_prob,
-                'model_version': result.model_version,
-                'inference_time_ms': result.inference_time_ms
-            })
+                # Use h5 as primary for backward compatibility
+                up_prob = ensemble_probs.get(5, 0.5)
+                down_prob = 1.0 - up_prob
+                hold_prob = 0.0
+
+                # 5. PREDICTION_STREAM에 발행 (ensemble format)
+                self.publisher.publish({
+                    'symbol': symbol,
+                    'timestamp': time.time(),
+                    'up_prob': up_prob,
+                    'down_prob': down_prob,
+                    'hold_prob': hold_prob,
+                    'model_version': 'ensemble',
+                    'inference_time_ms': inference_time_ms,
+                    # Multi-horizon data
+                    'ensemble': True,
+                    'up_prob_h1': ensemble_probs.get(1, 0.5),
+                    'up_prob_h3': ensemble_probs.get(3, 0.5),
+                    'up_prob_h5': ensemble_probs.get(5, 0.5),
+                    'up_prob_h10': ensemble_probs.get(10, 0.5),
+                    'signal_direction': signal.direction,
+                    'signal_confidence': signal.confidence,
+                })
+
+                logger.debug(
+                    f"Ensemble: {symbol} h1={ensemble_probs.get(1, 0):.2f} "
+                    f"h3={ensemble_probs.get(3, 0):.2f} h5={ensemble_probs.get(5, 0):.2f} "
+                    f"h10={ensemble_probs.get(10, 0):.2f} -> {signal.direction}"
+                )
+            else:
+                # Single model mode
+                probs = self.model_manager.predict(sequence)
+                inference_time_ms = (time.time() - start_time) * 1000
+
+                if probs is None:
+                    return True
+
+                # 4. 결과 구성
+                result = PredictionResult(
+                    symbol=symbol,
+                    timestamp=time.time(),
+                    hold_prob=float(probs[0]),
+                    up_prob=float(probs[1]),
+                    down_prob=float(probs[2]),
+                    model_version=self.model_manager.model_version,
+                    inference_time_ms=inference_time_ms
+                )
+
+                # 상세 로깅: 예측 결과
+                trading_logger.log_prediction_output(
+                    symbol=result.symbol,
+                    timestamp=result.timestamp,
+                    up_prob=result.up_prob,
+                    down_prob=result.down_prob,
+                    hold_prob=result.hold_prob,
+                    inference_time_ms=result.inference_time_ms,
+                    model_version=result.model_version
+                )
+
+                # 5. PREDICTION_STREAM에 발행
+                self.publisher.publish({
+                    'symbol': result.symbol,
+                    'timestamp': result.timestamp,
+                    'up_prob': result.up_prob,
+                    'down_prob': result.down_prob,
+                    'hold_prob': result.hold_prob,
+                    'model_version': result.model_version,
+                    'inference_time_ms': result.inference_time_ms
+                })
+
+                logger.debug(
+                    f"Prediction: {symbol} Up={result.up_prob:.2f} "
+                    f"Down={result.down_prob:.2f} ({inference_time_ms:.1f}ms)"
+                )
             
             # 통계 업데이트
             self._inference_count += 1
             self._total_inference_time += inference_time_ms
-            
+
             if self._inference_count % 100 == 0:
                 avg_time = self._total_inference_time / self._inference_count
+                mode = "ensemble" if self.use_ensemble else "single"
                 logger.info(
-                    f"Predictions: {self._inference_count}, "
+                    f"Predictions ({mode}): {self._inference_count}, "
                     f"Avg inference: {avg_time:.2f}ms"
                 )
-            
-            logger.debug(
-                f"Prediction: {symbol} Up={result.up_prob:.2f} "
-                f"Down={result.down_prob:.2f} ({inference_time_ms:.1f}ms)"
-            )
-            
+
             return True
             
         except Exception as e:
