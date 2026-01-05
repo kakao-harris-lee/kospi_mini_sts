@@ -4,7 +4,7 @@ FEATURE_STREAM + PREDICTION_STREAM → ORDER_COMMAND_STREAM
 이원화 전략 (Mode A/B) 및 주문 실행
 
 Mode A: Pure Basis Arbitrage (ArbitrageEngine)
-Mode B: ML-based Directional Trading
+Mode B: Deep Learning Trend Following (TrendEngine)
 """
 import time
 import logging
@@ -29,6 +29,7 @@ from src.common import (
 from src.strategy.base import BarData
 from src.strategy.arbitrage import ArbitrageEngine, ArbitrageSignal
 from src.strategy.arbitrage.basis_calculator import calculate_days_to_expiry
+from src.strategy.trend import TrendEngine, TrendSignal
 
 logger = setup_logging("strategy")
 
@@ -147,12 +148,29 @@ class StrategyManager(StreamConsumer):
             basis_rolling_window=self.arb_cfg.basis_rolling_window,
         )
 
+        # MODE_B: TrendEngine (Deep Learning Trend Following)
+        self.trend_cfg = settings.trend
+        self.trend_engine = TrendEngine(
+            dl_threshold=self.trend_cfg.dl_threshold,
+            ma_fast_period=self.trend_cfg.ma_fast_period,
+            ma_slow_period=self.trend_cfg.ma_slow_period,
+            atr_period=self.trend_cfg.atr_period,
+            atr_stop_multiplier=self.trend_cfg.atr_stop_multiplier,
+            time_cut_minutes=self.trend_cfg.time_cut_minutes,
+            time_cut_atr_threshold=self.trend_cfg.time_cut_atr_threshold,
+            order_size=self.trend_cfg.order_size,
+            min_bars_required=self.trend_cfg.min_bars_required,
+        )
+
         # Index data cache (from INDEX_STREAM)
         self._index_value: Optional[float] = None
         self._index_update_time: float = 0.0
 
         # 캐시된 Feature 데이터 (symbol -> latest feature)
         self._feature_cache: Dict[str, Dict] = {}
+
+        # Last bar timestamp for MODE_B bar updates
+        self._last_bar_time: Dict[str, float] = {}
 
         # 통계
         self._order_count = 0
@@ -277,36 +295,88 @@ class StrategyManager(StreamConsumer):
         return None
     
     def _execute_mode_b(
-        self, 
-        symbol: str, 
-        up_prob: float, 
-        down_prob: float,
+        self,
+        symbol: str,
+        up_prob: float,
         feature: Dict
     ) -> Optional[OrderCommand]:
         """
-        Mode B: 딥러닝 추세 매매
+        Mode B: Deep Learning Trend Following (TrendEngine)
+
+        Uses TrendEngine with ensemble filter:
+        1. DL probability > 85%
+        2. MA(20) > MA(60) for long
+        3. Price above Ichimoku cloud
+
+        Plus ATR trailing stop and 30-min time cut.
         """
-        if up_prob > self.cfg.mode_b_up_prob_buy:
+        # Update bar data for technical indicators (on new bar)
+        self._update_trend_bar(symbol, feature)
+
+        # Update current prices for order execution
+        bid = float(feature.get('bid_price_1', feature.get('best_bid', 0)))
+        ask = float(feature.get('ask_price_1', feature.get('best_ask', 0)))
+        self.trend_engine.update_prices(bid, ask)
+
+        # Current price
+        current_price = float(feature.get('close', feature.get('mid_price', 0)))
+        if current_price <= 0:
+            current_price = (bid + ask) / 2 if bid > 0 and ask > 0 else 0
+
+        # Check entry/exit with TrendEngine
+        signal = self.trend_engine.check(
+            up_prob=up_prob,
+            current_price=current_price,
+            symbol=symbol,
+        )
+
+        # Handle signal
+        if signal.action == "HOLD":
+            logger.debug(f"MODE_B: {signal.reason}")
+            return None
+
+        if signal.action.startswith("OPEN_"):
+            # Entry signal
+            side = OrderSide.BUY if signal.direction == "LONG" else OrderSide.SELL
             return OrderCommand(
                 symbol=symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.LIMIT,
-                size=self.cfg.mode_b_order_size,
-                price=feature.get('mid_price'),
-                strategy_id="DIRECTIONAL_BUY",
+                side=side,
+                order_type=OrderType.MARKET,  # Aggressive taker
+                size=signal.size,
+                price=signal.price,
+                strategy_id=f"TREND_{signal.direction}",
                 mode=TradingMode.MODE_B
             )
-        elif down_prob > (1 - self.cfg.mode_b_down_prob_sell):
+
+        if signal.action == "CLOSE":
+            # Exit signal
+            side = OrderSide.SELL if signal.direction == "LONG" else OrderSide.BUY
             return OrderCommand(
                 symbol=symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.LIMIT,
-                size=self.cfg.mode_b_order_size,
-                price=feature.get('mid_price'),
-                strategy_id="DIRECTIONAL_SELL",
+                side=side,
+                order_type=OrderType.MARKET,  # Immediate exit
+                size=signal.size,
+                price=signal.price,
+                strategy_id=f"TREND_EXIT_{signal.exit_reason.value if signal.exit_reason else 'MANUAL'}",
                 mode=TradingMode.MODE_B
             )
+
         return None
+
+    def _update_trend_bar(self, symbol: str, feature: Dict):
+        """Update TrendEngine with new bar data if bar timestamp changed."""
+        bar_time = float(feature.get('timestamp', 0))
+        last_time = self._last_bar_time.get(symbol, 0)
+
+        # Check if this is a new bar (timestamp changed)
+        if bar_time > last_time:
+            high = float(feature.get('high', feature.get('close', 0)))
+            low = float(feature.get('low', feature.get('close', 0)))
+            close = float(feature.get('close', feature.get('mid_price', 0)))
+
+            if high > 0 and low > 0 and close > 0:
+                self.trend_engine.update_bar(high, low, close)
+                self._last_bar_time[symbol] = bar_time
     
     def process_message(self, message: StreamMessage) -> bool:
         """
@@ -376,12 +446,15 @@ class StrategyManager(StreamConsumer):
                     )
 
             elif mode == TradingMode.MODE_B:
-                order = self._execute_mode_b(symbol, up_prob, down_prob, feature)
+                order = self._execute_mode_b(symbol, up_prob, feature)
                 if not order:
+                    # Get rejection reason from trend engine
+                    trend_stats = self.trend_engine.get_stats()
+                    filter_stats = trend_stats.get('filter', {})
                     trading_logger.log_no_order(
                         symbol=symbol,
                         timestamp=time.time(),
-                        reason=f"MODE_B - Probability threshold not met: up={up_prob:.3f}, down={down_prob:.3f}"
+                        reason=f"MODE_B - Ensemble filter rejected (signal_rate={filter_stats.get('signal_rate', 0):.1%})"
                     )
             
             # 5. 주문 실행
@@ -395,6 +468,20 @@ class StrategyManager(StreamConsumer):
                         'basis': basis_data.basis if basis_data else 0,
                         'fair_value': basis_data.fair_value if basis_data else 0,
                         'liquidity_score': liquidity_score,
+                    }
+                elif order.mode == TradingMode.MODE_B:
+                    tech = self.trend_engine.technical.get_current_data()
+                    pos_info = self.trend_engine.position_manager.get_position_info()
+                    if 'EXIT' in order.strategy_id:
+                        reason = f"Exit: {order.strategy_id}"
+                    else:
+                        reason = f"Ensemble passed: DL={up_prob:.1%}, MA_bull={tech.is_bullish_ma if tech else 'N/A'}"
+                    scores = {
+                        'up_prob': up_prob,
+                        'ma_fast': tech.ma_fast if tech else 0,
+                        'ma_slow': tech.ma_slow if tech else 0,
+                        'atr': tech.atr if tech else 0,
+                        'stop_price': pos_info.get('current_stop', 0),
                     }
                 else:
                     reason = f"Up={up_prob:.3f}, Down={down_prob:.3f}, LIQ={liquidity_score:.1f}"

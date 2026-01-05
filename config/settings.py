@@ -167,6 +167,30 @@ class ResilienceConfig:
 
 
 @dataclass
+class TrendConfig:
+    """MODE_B Deep Learning Trend Following Settings"""
+
+    # Entry Filters
+    dl_threshold: float = float(os.getenv("TREND_DL_THRESHOLD", "0.85"))
+    ma_fast_period: int = int(os.getenv("TREND_MA_FAST", "20"))
+    ma_slow_period: int = int(os.getenv("TREND_MA_SLOW", "60"))
+
+    # ATR Settings
+    atr_period: int = int(os.getenv("TREND_ATR_PERIOD", "14"))
+    atr_stop_multiplier: float = float(os.getenv("TREND_ATR_MULTIPLIER", "2.0"))
+
+    # Time Cut
+    time_cut_minutes: int = int(os.getenv("TREND_TIME_CUT_MIN", "30"))
+    time_cut_atr_threshold: float = float(os.getenv("TREND_TIME_CUT_ATR", "0.5"))
+
+    # Order Execution
+    order_size: float = float(os.getenv("TREND_ORDER_SIZE", "1.0"))
+
+    # Warmup
+    min_bars_required: int = int(os.getenv("TREND_MIN_BARS", "60"))
+
+
+@dataclass
 class Settings:
     kis: KISConfig = field(default_factory=KISConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
@@ -174,6 +198,7 @@ class Settings:
     model: ModelConfig = field(default_factory=ModelConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     arbitrage: ArbitrageConfig = field(default_factory=ArbitrageConfig)  # MODE_A redesign
+    trend: TrendConfig = field(default_factory=TrendConfig)  # MODE_B redesign
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
     mock_prediction: MockPredictionConfig = field(default_factory=MockPredictionConfig)  # v0.0.2
     resilience: ResilienceConfig = field(default_factory=ResilienceConfig)  # v0.0.3
