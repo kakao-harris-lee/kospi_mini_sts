@@ -25,6 +25,7 @@ STRATEGY_MAP = {
     "hybrid": "HybridStrategy",
     "pure_micro": "PureMicrostructureStrategy",
     "adaptive_micro": "AdaptiveMicrostructureStrategy",
+    "dual_mode": "DualModeStrategy",
 }
 
 
@@ -175,6 +176,7 @@ def run_backtest(
             HybridStrategy,
             PureMicrostructureStrategy,
             AdaptiveMicrostructureStrategy,
+            DualModeStrategy,
         )
         from src.database import ResultRepository
 
@@ -196,6 +198,7 @@ def run_backtest(
             "hybrid": HybridStrategy,
             "pure_micro": PureMicrostructureStrategy,
             "adaptive_micro": AdaptiveMicrostructureStrategy,
+            "dual_mode": DualModeStrategy,
         }
         strategy_instance = strategy_classes[strategy]()
         adapter = StrategyAdapter(strategy_instance)

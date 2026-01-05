@@ -460,6 +460,9 @@ async def run_paper_trading(
         BreakoutStrategy,
         OFIMomentumStrategy,
         HybridStrategy,
+        PureMicrostructureStrategy,
+        AdaptiveMicrostructureStrategy,
+        DualModeStrategy,
     )
 
     strategy_classes = {
@@ -467,6 +470,9 @@ async def run_paper_trading(
         "breakout": BreakoutStrategy,
         "ofi_momentum": OFIMomentumStrategy,
         "hybrid": HybridStrategy,
+        "pure_micro": PureMicrostructureStrategy,
+        "adaptive_micro": AdaptiveMicrostructureStrategy,
+        "dual_mode": DualModeStrategy,
     }
 
     if strategy_name not in strategy_classes:

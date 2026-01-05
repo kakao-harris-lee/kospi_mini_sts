@@ -1,7 +1,7 @@
 """
 Dual Mode Strategy - Combines MODE_A and MODE_B with State Machine
 
-MODE_A: Pure Basis Arbitrage (ArbitrageEngine)
+MODE_A: OFI Mean Reversion (extreme z-scores)
 MODE_B: Deep Learning Trend Following (TrendEngine)
 
 State Machine:
@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..base import BaseStrategy, Signal, PositionSide, BarData
-from ..arbitrage import ArbitrageEngine
 from ..trend import TrendEngine
 
 # Telegram notifications
@@ -86,14 +85,7 @@ class DualModeStrategy(BaseStrategy):
         super().__init__(name="DualMode")
         self.config = config or DualModeConfig()
 
-        # Initialize engines
-        self.arb_engine = ArbitrageEngine(
-            max_spread_ticks=self.config.arb_max_spread_ticks,
-            depth_multiplier=self.config.arb_depth_multiplier,
-            basis_threshold=self.config.basis_threshold,
-            order_size=self.config.order_size,
-        )
-
+        # Initialize trend engine for MODE_B
         self.trend_engine = TrendEngine(
             dl_threshold=self.config.trend_dl_threshold,
             ma_fast_period=self.config.trend_ma_fast,
@@ -184,31 +176,35 @@ class DualModeStrategy(BaseStrategy):
         _send_telegram(msg)
 
     def _process_mode_a(self, bar: BarData) -> Signal:
-        """Process MODE_A: Arbitrage."""
-        # Update arbitrage engine with orderbook data
-        self.arb_engine.update_orderbook(
-            best_bid=bar.best_bid,
-            best_ask=bar.best_ask,
-            bid_qty=bar.bid_qty1 + bar.bid_qty2 + bar.bid_qty3,
-            ask_qty=bar.ask_qty1 + bar.ask_qty2 + bar.ask_qty3,
-        )
+        """Process MODE_A: Arbitrage based on OFI z-score extremes."""
+        # MODE_A simplified: use OFI z-score as basis proxy for mean reversion
+        # When OFI z-score is extreme, expect price to revert
+        ofi_z = bar.ofi_zscore
 
-        # Check for arbitrage signal
-        signal = self.arb_engine.check(
-            current_price=bar.close,
-            basis_zscore=bar.ofi_zscore,  # Using OFI z-score as basis proxy
-            timestamp=bar.datetime.timestamp() if bar.datetime else time.time(),
-        )
+        # Check spread is acceptable
+        spread = bar.spread if bar.spread > 0 else (bar.best_ask - bar.best_bid)
+        if spread > self.config.arb_max_spread_ticks * 0.05:  # 0.05 point per tick
+            return Signal.HOLD
 
-        if signal.action == "BUY":
+        # Check depth is sufficient
+        total_bid_qty = bar.bid_qty1 + bar.bid_qty2 + bar.bid_qty3
+        total_ask_qty = bar.ask_qty1 + bar.ask_qty2 + bar.ask_qty3
+        min_depth = self.config.order_size * self.config.arb_depth_multiplier
+        if total_bid_qty < min_depth or total_ask_qty < min_depth:
+            return Signal.HOLD
+
+        # Arbitrage signal: extreme OFI z-score suggests mean reversion
+        if ofi_z < -self.config.basis_threshold:
+            # Oversold - expect bounce (BUY)
             self._stats['mode_a_signals'] += 1
             self.active_engine = "arb"
-            self._notify_signal("BUY", "MODE_A", bar, signal.reason)
+            self._notify_signal("BUY", "MODE_A", bar, f"OFI oversold (z={ofi_z:.2f})")
             return Signal.BUY
-        elif signal.action == "SELL":
+        elif ofi_z > self.config.basis_threshold:
+            # Overbought - expect pullback (SELL)
             self._stats['mode_a_signals'] += 1
             self.active_engine = "arb"
-            self._notify_signal("SELL", "MODE_A", bar, signal.reason)
+            self._notify_signal("SELL", "MODE_A", bar, f"OFI overbought (z={ofi_z:.2f})")
             return Signal.SELL
 
         return Signal.HOLD
@@ -293,14 +289,12 @@ class DualModeStrategy(BaseStrategy):
             'mode_a_ratio': self._stats['mode_a_bars'] / total if total > 0 else 0,
             'mode_b_ratio': self._stats['mode_b_bars'] / total if total > 0 else 0,
             'avoid_ratio': self._stats['avoid_bars'] / total if total > 0 else 0,
-            'arb_stats': self.arb_engine.get_stats(),
             'trend_stats': self.trend_engine.get_stats(),
         }
 
     def reset(self):
         """Reset strategy state."""
         super().reset()
-        self.arb_engine.reset()
         self.trend_engine.reset()
         self.current_mode = TradingMode.AVOID
         self.active_engine = None

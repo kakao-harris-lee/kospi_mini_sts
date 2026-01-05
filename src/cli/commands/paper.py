@@ -24,6 +24,7 @@ STRATEGY_MAP = {
     "hybrid": "HybridStrategy",
     "pure_micro": "PureMicrostructureStrategy",
     "adaptive_micro": "AdaptiveMicrostructureStrategy",
+    "dual_mode": "DualModeStrategy",
 }
 
 
@@ -128,6 +129,7 @@ async def _run_paper_trading_async(
         HybridStrategy,
         PureMicrostructureStrategy,
         AdaptiveMicrostructureStrategy,
+        DualModeStrategy,
     )
     from src.paper_trading import PaperTradingEngine, VirtualBroker
 
@@ -138,6 +140,7 @@ async def _run_paper_trading_async(
         "hybrid": HybridStrategy,
         "pure_micro": PureMicrostructureStrategy,
         "adaptive_micro": AdaptiveMicrostructureStrategy,
+        "dual_mode": DualModeStrategy,
     }
 
     strategy = strategy_classes[strategy_name]()
