@@ -2,9 +2,13 @@
 Strategy Manager 모듈
 FEATURE_STREAM + PREDICTION_STREAM → ORDER_COMMAND_STREAM
 이원화 전략 (Mode A/B) 및 주문 실행
+
+Mode A: Pure Basis Arbitrage (ArbitrageEngine)
+Mode B: ML-based Directional Trading
 """
 import time
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -22,6 +26,9 @@ from src.common import (
     get_metrics,
     trading_logger
 )
+from src.strategy.base import BarData
+from src.strategy.arbitrage import ArbitrageEngine, ArbitrageSignal
+from src.strategy.arbitrage.basis_calculator import calculate_days_to_expiry
 
 logger = setup_logging("strategy")
 
@@ -101,16 +108,16 @@ class DryRunOrderExecutor(BaseOrderExecutor):
 class StrategyManager(StreamConsumer):
     """
     Strategy Manager 메인 클래스
-    
+
     두 개의 Stream을 소비:
     - FEATURE_STREAM: 유동성 정보
     - PREDICTION_STREAM: 모델 예측 결과
-    
+
     이원화 전략:
-    - Mode A: 스나이퍼 차익거래 (유동성↑ + 괴리↑ + 예측↑)
+    - Mode A: Pure Basis Arbitrage (ArbitrageEngine) - No ML dependency
     - Mode B: 딥러닝 추세 매매 (높은 신뢰도 예측)
     """
-    
+
     def __init__(self, order_executor: BaseOrderExecutor = None):
         # Prediction Stream 소비
         super().__init__(
@@ -118,19 +125,35 @@ class StrategyManager(StreamConsumer):
             group_name=settings.consumer.strategy_group,
             consumer_name="strategy_1"
         )
-        
+
         self.order_publisher = StreamPublisher(settings.redis.order_stream)
         self.redis = RedisClient.get_client()
-        
+
         # 주문 실행기
         self.executor = order_executor or DryRunOrderExecutor()
-        
+
         # 전략 설정
         self.cfg = settings.strategy
-        
+        self.arb_cfg = settings.arbitrage
+
+        # MODE_A: ArbitrageEngine (Pure Basis Arbitrage)
+        self.arbitrage_engine = ArbitrageEngine(
+            max_spread_ticks=self.arb_cfg.max_spread_ticks,
+            depth_multiplier=self.arb_cfg.depth_multiplier,
+            basis_threshold=self.arb_cfg.basis_threshold,
+            order_size=self.arb_cfg.order_size,
+            quarterly_blackout_days=self.arb_cfg.quarterly_blackout_days,
+            risk_free_rate=self.arb_cfg.risk_free_rate,
+            basis_rolling_window=self.arb_cfg.basis_rolling_window,
+        )
+
+        # Index data cache (from INDEX_STREAM)
+        self._index_value: Optional[float] = None
+        self._index_update_time: float = 0.0
+
         # 캐시된 Feature 데이터 (symbol -> latest feature)
         self._feature_cache: Dict[str, Dict] = {}
-        
+
         # 통계
         self._order_count = 0
         self._mode_counts = {m: 0 for m in TradingMode}
@@ -152,6 +175,29 @@ class StrategyManager(StreamConsumer):
         except Exception as e:
             logger.error(f"Failed to get feature: {e}")
         return self._feature_cache.get(symbol)
+
+    def _get_latest_index_value(self) -> Optional[float]:
+        """
+        Get latest KOSPI200 index value from Redis INDEX_STREAM.
+        Returns cached value if fresh enough (within 5 seconds).
+        """
+        # Check if cached value is fresh enough
+        if self._index_value and (time.time() - self._index_update_time) < 5.0:
+            return self._index_value
+
+        try:
+            # Read latest from INDEX_STREAM
+            stream_name = self.arb_cfg.index_stream
+            result = self.redis.xrevrange(stream_name, count=1)
+            if result:
+                _, data = result[0]
+                self._index_value = float(data.get(b'value', data.get('value', 0)))
+                self._index_update_time = time.time()
+                return self._index_value
+        except Exception as e:
+            logger.debug(f"Failed to get index value: {e}")
+
+        return self._index_value
     
     def _determine_mode(
         self, 
@@ -175,35 +221,59 @@ class StrategyManager(StreamConsumer):
         return TradingMode.MODE_B
     
     def _execute_mode_a(
-        self, 
-        symbol: str, 
-        up_prob: float, 
-        down_prob: float,
+        self,
+        symbol: str,
         feature: Dict
     ) -> Optional[OrderCommand]:
         """
-        Mode A: 스나이퍼 차익거래
+        Mode A: Pure Basis Arbitrage (ArbitrageEngine)
+
+        Uses ArbitrageEngine to check entry conditions:
+        1. Time filter (trading hours)
+        2. Dividend blackout check
+        3. Spread filter (≤2 ticks)
+        4. Depth filter (≥5x order size)
+        5. Basis signal (|z| > 2.5σ)
+
+        No ML dependency - trades solely on basis deviation.
         """
-        if up_prob > self.cfg.mode_a_up_prob_threshold:
+        # Get KOSPI200 index value
+        spot_index = self._get_latest_index_value()
+        if not spot_index:
+            logger.debug("No index value available for arbitrage")
+            return None
+
+        # Create BarData from feature dict
+        bar = BarData.from_dict(feature)
+
+        # Calculate days to expiry (default to front month A05601)
+        days_to_expiry = calculate_days_to_expiry("A05601")
+
+        # Check entry with ArbitrageEngine
+        can_enter, signal, reason = self.arbitrage_engine.check_entry(
+            bar=bar,
+            spot_index=spot_index,
+            days_to_expiry=days_to_expiry,
+            current_time=datetime.now()
+        )
+
+        if not can_enter:
+            logger.debug(f"MODE_A rejected: {reason}")
+            return None
+
+        # Generate order from signal
+        if signal:
+            side = OrderSide.BUY if signal.direction == "BUY" else OrderSide.SELL
             return OrderCommand(
                 symbol=symbol,
-                side=OrderSide.BUY,
+                side=side,
                 order_type=OrderType.LIMIT,
-                size=self.cfg.mode_a_order_size,
-                price=feature.get('mid_price'),
-                strategy_id="ARBITRAGE_BUY",
+                size=signal.order_size,
+                price=signal.entry_price,  # Maker price (best bid/ask)
+                strategy_id=f"ARBITRAGE_{signal.direction}",
                 mode=TradingMode.MODE_A
             )
-        elif down_prob > self.cfg.mode_a_up_prob_threshold:
-            return OrderCommand(
-                symbol=symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.LIMIT,
-                size=self.cfg.mode_a_order_size,
-                price=feature.get('mid_price'),
-                strategy_id="ARBITRAGE_SELL",
-                mode=TradingMode.MODE_A
-            )
+
         return None
     
     def _execute_mode_b(
@@ -295,12 +365,14 @@ class StrategyManager(StreamConsumer):
                 # TODO: 기존 포지션 청산 로직
 
             elif mode == TradingMode.MODE_A:
-                order = self._execute_mode_a(symbol, up_prob, down_prob, feature)
+                order = self._execute_mode_a(symbol, feature)
                 if not order:
+                    # Get rejection reason from arbitrage engine stats
+                    arb_stats = self.arbitrage_engine.get_stats()
                     trading_logger.log_no_order(
                         symbol=symbol,
                         timestamp=time.time(),
-                        reason=f"MODE_A - Probability threshold not met: up={up_prob:.3f}, down={down_prob:.3f}"
+                        reason=f"MODE_A - Arbitrage filter rejected (pass_rate={arb_stats.get('pass_rate', 0):.1%})"
                     )
 
             elif mode == TradingMode.MODE_B:
@@ -314,6 +386,25 @@ class StrategyManager(StreamConsumer):
             
             # 5. 주문 실행
             if order:
+                # Build reason and scores based on mode
+                if order.mode == TradingMode.MODE_A:
+                    basis_data = self.arbitrage_engine.basis_calculator.get_current_data()
+                    reason = f"Basis z={basis_data.basis_zscore:.2f}σ" if basis_data else "Arbitrage signal"
+                    scores = {
+                        'basis_zscore': basis_data.basis_zscore if basis_data else 0,
+                        'basis': basis_data.basis if basis_data else 0,
+                        'fair_value': basis_data.fair_value if basis_data else 0,
+                        'liquidity_score': liquidity_score,
+                    }
+                else:
+                    reason = f"Up={up_prob:.3f}, Down={down_prob:.3f}, LIQ={liquidity_score:.1f}"
+                    scores = {
+                        'ofi_score': ofi_z_score,
+                        'liquidity_score': liquidity_score,
+                        'up_prob': up_prob,
+                        'down_prob': down_prob
+                    }
+
                 # 상세 로깅: 주문 결정
                 trading_logger.log_order_decision(
                     symbol=order.symbol,
@@ -324,13 +415,8 @@ class StrategyManager(StreamConsumer):
                     price=order.price,
                     strategy_id=order.strategy_id,
                     mode=order.mode.value,
-                    reason=f"Up={up_prob:.3f}, Down={down_prob:.3f}, LIQ={liquidity_score:.1f}",
-                    scores={
-                        'ofi_score': ofi_z_score,
-                        'liquidity_score': liquidity_score,
-                        'up_prob': up_prob,
-                        'down_prob': down_prob
-                    }
+                    reason=reason,
+                    scores=scores
                 )
 
                 success = self.executor.execute(order)

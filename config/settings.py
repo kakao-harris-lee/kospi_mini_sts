@@ -72,21 +72,48 @@ class ModelConfig:
 
 @dataclass
 class StrategyConfig:
-    # 모드 A: 스나이퍼 차익거래
+    # 모드 A: 스나이퍼 차익거래 (legacy - see ArbitrageConfig for new implementation)
     mode_a_liquidity_threshold: float = 80.0
     mode_a_basis_gap_sigma: float = 2.5
     mode_a_up_prob_threshold: float = 0.65
     mode_a_order_size: float = 5.0
-    
+
     # 모드 B: 딥러닝 추세 매매
     mode_b_basis_gap_sigma: float = 1.0
     mode_b_liquidity_min: float = 50.0
     mode_b_up_prob_buy: float = 0.85
     mode_b_down_prob_sell: float = 0.15
     mode_b_order_size: float = 1.0
-    
+
     # 회피 구간
     liquidity_avoid_threshold: float = 50.0
+
+
+@dataclass
+class ArbitrageConfig:
+    """MODE_A Sniper Arbitrage Settings (Pure Basis Arbitrage)"""
+
+    # Entry Filters
+    max_spread_ticks: int = int(os.getenv("ARBITRAGE_MAX_SPREAD_TICKS", "2"))
+    depth_multiplier: float = float(os.getenv("ARBITRAGE_DEPTH_MULTIPLIER", "5.0"))
+    basis_threshold: float = float(os.getenv("ARBITRAGE_BASIS_THRESHOLD", "2.5"))
+
+    # Order Execution
+    order_size: float = float(os.getenv("ARBITRAGE_ORDER_SIZE", "5.0"))
+    order_timeout_sec: float = float(os.getenv("ARBITRAGE_ORDER_TIMEOUT", "10.0"))
+
+    # Basis Calculation
+    risk_free_rate: float = float(os.getenv("ARBITRAGE_RISK_FREE_RATE", "0.035"))
+    basis_rolling_window: int = int(os.getenv("ARBITRAGE_ROLLING_WINDOW", "60"))
+
+    # Blackout Periods
+    quarterly_blackout_days: int = int(os.getenv("ARBITRAGE_BLACKOUT_DAYS", "14"))
+
+    # KOSPI200 Index
+    index_symbol: str = os.getenv("ARBITRAGE_INDEX_SYMBOL", "0001")  # KOSPI200 index code
+
+    # Redis Streams
+    index_stream: str = "INDEX_STREAM"
 
 
 @dataclass
@@ -146,6 +173,7 @@ class Settings:
     clickhouse: ClickHouseConfig = field(default_factory=ClickHouseConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
+    arbitrage: ArbitrageConfig = field(default_factory=ArbitrageConfig)  # MODE_A redesign
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
     mock_prediction: MockPredictionConfig = field(default_factory=MockPredictionConfig)  # v0.0.2
     resilience: ResilienceConfig = field(default_factory=ResilienceConfig)  # v0.0.3
