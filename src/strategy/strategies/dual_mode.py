@@ -53,14 +53,14 @@ class DualModeConfig:
     liquidity_mode_a_threshold: float = 80.0   # Above this = MODE_A eligible
 
     # Basis thresholds for MODE_A
-    basis_threshold: float = 2.5  # Z-score threshold for arbitrage
+    basis_threshold: float = 1.5  # Z-score threshold for arbitrage (lowered for more signals)
 
     # MODE_A: Arbitrage settings
-    arb_max_spread_ticks: int = 2
-    arb_depth_multiplier: float = 5.0
+    arb_max_spread_ticks: int = 4  # Allow wider spreads
+    arb_depth_multiplier: float = 3.0
 
     # MODE_B: Trend settings
-    trend_dl_threshold: float = 0.85
+    trend_dl_threshold: float = 0.65  # Lowered for more signals
     trend_ma_fast: int = 20
     trend_ma_slow: int = 60
     trend_atr_period: int = 14
@@ -120,8 +120,8 @@ class DualModeStrategy(BaseStrategy):
         # Check liquidity (use bid_ask_imbalance as proxy, or spread)
         spread = bar.spread if bar.spread > 0 else (bar.best_ask - bar.best_bid)
 
-        # If spread is too wide, avoid
-        if spread > 0.5:  # More than 0.5 point spread
+        # If spread is too wide, avoid (but allow in backtest mode where spread=0)
+        if spread > 0.5:
             return TradingMode.AVOID
 
         # Check basis for arbitrage opportunity
@@ -212,7 +212,7 @@ class DualModeStrategy(BaseStrategy):
     def _process_mode_b(self, bar: BarData) -> Signal:
         """Process MODE_B: Trend Following."""
         # Update technical indicators with bar data
-        self.trend_engine.update_bar(
+        tech = self.trend_engine.update_bar(
             high=bar.high,
             low=bar.low,
             close=bar.close,
@@ -224,9 +224,19 @@ class DualModeStrategy(BaseStrategy):
             ask=bar.best_ask if bar.best_ask > 0 else bar.close,
         )
 
+        # Use up_prob if available, otherwise use MA-based momentum
+        up_prob = bar.up_prob
+        if up_prob == 0.5 and tech is not None:
+            # Fallback: Use MA crossover as probability proxy
+            # If fast MA > slow MA, bullish (up_prob > 0.5)
+            if tech.is_bullish_ma:
+                up_prob = 0.7  # Bullish bias
+            else:
+                up_prob = 0.3  # Bearish bias
+
         # Check for trend signal
         signal = self.trend_engine.check(
-            up_prob=bar.up_prob,
+            up_prob=up_prob,
             current_price=bar.close,
             timestamp=bar.datetime.timestamp() if bar.datetime else time.time(),
         )
@@ -234,12 +244,14 @@ class DualModeStrategy(BaseStrategy):
         if signal.action == "OPEN_LONG":
             self._stats['mode_b_signals'] += 1
             self.active_engine = "trend"
-            self._notify_signal("BUY", "MODE_B", bar, f"LONG entry (DL: {bar.up_prob:.1%})")
+            reason = f"LONG entry (prob: {up_prob:.1%})"
+            self._notify_signal("BUY", "MODE_B", bar, reason)
             return Signal.BUY
         elif signal.action == "OPEN_SHORT":
             self._stats['mode_b_signals'] += 1
             self.active_engine = "trend"
-            self._notify_signal("SELL", "MODE_B", bar, f"SHORT entry (DL: {1-bar.up_prob:.1%})")
+            reason = f"SHORT entry (prob: {1-up_prob:.1%})"
+            self._notify_signal("SELL", "MODE_B", bar, reason)
             return Signal.SELL
         elif signal.action == "CLOSE":
             self.active_engine = None
