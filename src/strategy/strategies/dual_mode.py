@@ -224,15 +224,22 @@ class DualModeStrategy(BaseStrategy):
             ask=bar.best_ask if bar.best_ask > 0 else bar.close,
         )
 
-        # Use up_prob if available, otherwise use MA-based momentum
+        # Use up_prob if available, otherwise use MA + Ichimoku-based momentum
         up_prob = bar.up_prob
         if up_prob == 0.5 and tech is not None:
-            # Fallback: Use MA crossover as probability proxy
-            # If fast MA > slow MA, bullish (up_prob > 0.5)
-            if tech.is_bullish_ma:
-                up_prob = 0.7  # Bullish bias
-            else:
-                up_prob = 0.3  # Bearish bias
+            # Fallback: Use MA crossover + Ichimoku cloud as probability proxy
+            ma_bullish = tech.is_bullish_ma
+            above_cloud = tech.current_price > tech.cloud_top
+            below_cloud = tech.current_price < tech.cloud_bottom
+
+            if ma_bullish and above_cloud:
+                up_prob = 0.80  # Strong bullish - price above cloud, MA bullish
+            elif ma_bullish:
+                up_prob = 0.70  # Moderate bullish - MA bullish but not above cloud
+            elif not ma_bullish and below_cloud:
+                up_prob = 0.20  # Strong bearish - price below cloud, MA bearish
+            elif not ma_bullish:
+                up_prob = 0.30  # Moderate bearish - MA bearish but not below cloud
 
         # Check for trend signal
         signal = self.trend_engine.check(
