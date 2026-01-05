@@ -84,7 +84,14 @@ class HybridStrategy(BaseStrategy):
 
         # 레짐 체크 (선택)
         if self.config.avoid_medium_regime:
-            regime = VolatilityRegime(bar.regime) if bar.regime else VolatilityRegime.MEDIUM
+            if bar.regime is None:
+                logger.debug("Regime not available (warm-up period), skipping")
+                return Signal.HOLD
+            try:
+                regime = VolatilityRegime(bar.regime)
+            except ValueError:
+                logger.warning(f"Invalid regime value: {bar.regime}, using MEDIUM")
+                regime = VolatilityRegime.MEDIUM
             if regime == VolatilityRegime.MEDIUM:
                 if self.state.position != PositionSide.FLAT:
                     return Signal.HOLD  # 관망 (포지션 유지)
@@ -293,8 +300,15 @@ class AdaptiveHybridStrategy(HybridStrategy):
 
     def generate_signal(self, bar: BarData) -> Signal:
         """시그널 생성 (레짐 적응)"""
-        # 레짐 파악 및 설정 적용
-        regime = VolatilityRegime(bar.regime) if bar.regime else VolatilityRegime.MEDIUM
+        # 레짐 파악 및 설정 적용 (None = warm-up period)
+        if bar.regime is None:
+            regime = VolatilityRegime.MEDIUM
+        else:
+            try:
+                regime = VolatilityRegime(bar.regime)
+            except ValueError:
+                logger.warning(f"Invalid regime value: {bar.regime}, using MEDIUM")
+                regime = VolatilityRegime.MEDIUM
         self._apply_regime_config(regime)
 
         return super().generate_signal(bar)

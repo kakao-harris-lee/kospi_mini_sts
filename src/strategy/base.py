@@ -62,8 +62,8 @@ class BarData:
     up_prob: float = 0.5
     down_prob: float = 0.5
 
-    # 기타
-    regime: str = "MEDIUM"
+    # 변동성 레짐 (None = not yet determined, requires warm-up period)
+    regime: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BarData":
@@ -84,7 +84,7 @@ class BarData:
             hv=data.get('hv', 0),
             up_prob=data.get('up_prob', 0.5),
             down_prob=data.get('down_prob', 0.5),
-            regime=data.get('regime', 'MEDIUM'),
+            regime=data.get('regime'),  # None if not provided (warm-up period)
         )
 
 

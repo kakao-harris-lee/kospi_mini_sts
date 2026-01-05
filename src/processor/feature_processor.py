@@ -1,7 +1,7 @@
 """
 Feature Processor 모듈
 RAW_DATA_STREAM → FEATURE_STREAM
-OFI, 유동성 점수, 1분봉 Feature 계산
+OFI, 유동성 점수, 1분봉 Feature 계산, 변동성 레짐 판단
 """
 import time
 import json
@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import sys
 from config.settings import settings
 from src.common import StreamConsumer, StreamPublisher, StreamMessage, setup_logging, RedisClient, init_metrics, get_metrics, ClickHouseClient, trading_logger
+from src.strategy.regime_detector import RegimeDetector, RegimeConfig, VolatilityRegime
 
 logger = setup_logging("processor")
 
@@ -409,6 +410,7 @@ class SymbolState:
     candle_1m: CandleAggregator = field(default_factory=CandleAggregator)
     candle_5m: CandleAggregator = field(default_factory=lambda: CandleAggregator(interval_sec=300))
     tech_indicators: TechnicalIndicators = field(default_factory=TechnicalIndicators)
+    regime_detector: RegimeDetector = field(default_factory=RegimeDetector)
 
     # Rolling Window for Prediction Engine (최근 60개 Feature)
     feature_window: Deque = field(default_factory=lambda: deque(maxlen=60))
@@ -555,35 +557,54 @@ class FeatureProcessor(StreamConsumer):
                     feature.update(tech_features)
                     logger.debug(f"Tech features calculated: RSI={tech_features['rsi']:.1f}")
 
-                    # 상세 로깅: 기술적 지표와 함께 다시 로깅
-                    trading_logger.log_feature_calculated(
-                        symbol=symbol,
-                        timestamp=timestamp,
-                        ofi_tick=ofi_tick,
-                        ofi_z_score=ofi_z,
-                        ofi_cumulative=ofi_cumulative,
-                        liquidity_score=liquidity_score,
-                        mid_price=mid_price,
-                        spread=ask_p1 - bid_p1,
-                        bid_total=sum(bid_qtys),
-                        ask_total=sum(ask_qtys),
-                        candle_completed=True,
-                        candle=candle_1m,
-                        tech_features=tech_features
-                    )
+                # 변동성 레짐 업데이트 (1분봉 완성 시)
+                state.regime_detector.update(
+                    high=candle_1m['high'],
+                    low=candle_1m['low'],
+                    close=candle_1m['close'],
+                    volume=int(candle_1m['volume'])
+                )
+                regime_info = state.regime_detector.get_regime_info()
+                feature['regime'] = regime_info['regime']
+                feature['regime_atr'] = regime_info['atr']
+                feature['regime_atr_percentile'] = regime_info['atr_percentile']
+                feature['regime_hv'] = regime_info['hv']
+                feature['regime_volume_surge'] = regime_info['volume_surge']
+                feature['regime_range_expansion'] = regime_info['range_expansion']
+                logger.debug(
+                    f"Regime updated: {symbol} regime={regime_info['regime']}, "
+                    f"ATR_pct={regime_info['atr_percentile']:.2f}"
+                )
 
-                    # 5. Rolling Window 업데이트 (Prediction Engine용)
-                    # 기술적 지표가 있는 feature만 저장 (1분봉 단위)
-                    state.feature_window.append(feature)
-                    self._update_rolling_window(symbol, state.feature_window)
+                # 상세 로깅: 기술적 지표와 함께 다시 로깅
+                trading_logger.log_feature_calculated(
+                    symbol=symbol,
+                    timestamp=timestamp,
+                    ofi_tick=ofi_tick,
+                    ofi_z_score=ofi_z,
+                    ofi_cumulative=ofi_cumulative,
+                    liquidity_score=liquidity_score,
+                    mid_price=mid_price,
+                    spread=ask_p1 - bid_p1,
+                    bid_total=sum(bid_qtys),
+                    ask_total=sum(ask_qtys),
+                    candle_completed=True,
+                    candle=candle_1m,
+                    tech_features=tech_features
+                )
 
-                    # 상세 로깅: Rolling Window 업데이트
-                    features_with_tech = sum(1 for f in state.feature_window if 'returns' in f)
-                    trading_logger.log_rolling_window_update(
-                        symbol=symbol,
-                        window_size=len(state.feature_window),
-                        features_with_tech=features_with_tech
-                    )
+                # 5. Rolling Window 업데이트 (Prediction Engine용)
+                # 기술적 지표가 있는 feature만 저장 (1분봉 단위)
+                state.feature_window.append(feature)
+                self._update_rolling_window(symbol, state.feature_window)
+
+                # 상세 로깅: Rolling Window 업데이트
+                features_with_tech = sum(1 for f in state.feature_window if 'returns' in f)
+                trading_logger.log_rolling_window_update(
+                    symbol=symbol,
+                    window_size=len(state.feature_window),
+                    features_with_tech=features_with_tech
+                )
             
             # 6. FEATURE_STREAM에 발행
             self.publisher.publish(feature)
@@ -594,6 +615,7 @@ class FeatureProcessor(StreamConsumer):
             metrics.record_feature_calculation("liquidity")
             if candle_1m:
                 metrics.record_feature_calculation("tech_indicators")
+                metrics.record_feature_calculation("regime")
             metrics.record_redis_message(
                 stream=settings.redis.raw_stream,
                 consumer_group=settings.consumer.processor_group
