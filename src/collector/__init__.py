@@ -2,6 +2,7 @@
 from .data_collector import DataCollector, BaseAPIAdapter, TickData, MockAPIAdapter
 from .kis_websocket import KISWebSocketAdapter, KISConfig, KISMarket
 from .tick_collector import TickDataCollector, TickCollectorConfig, get_current_futures_code
+from .index_collector import IndexCollector, IndexData, MockIndexCollector
 
 __all__ = [
     # 기본 수집기
@@ -17,4 +18,8 @@ __all__ = [
     "TickDataCollector",
     "TickCollectorConfig",
     "get_current_futures_code",
+    # 지수 수집기 (MODE_A Arbitrage)
+    "IndexCollector",
+    "IndexData",
+    "MockIndexCollector",
 ]

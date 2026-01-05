@@ -65,8 +65,15 @@ class MeanReversionStrategy(BaseStrategy):
         if len(self.history) < self.config.min_history:
             return Signal.HOLD
 
-        # 레짐 체크
-        regime = VolatilityRegime(bar.regime) if bar.regime else VolatilityRegime.MEDIUM
+        # 레짐 체크 (None = warm-up period, skip trading)
+        if bar.regime is None:
+            logger.debug("Regime not available (warm-up period), skipping")
+            return Signal.HOLD
+        try:
+            regime = VolatilityRegime(bar.regime)
+        except ValueError:
+            logger.warning(f"Invalid regime value: {bar.regime}, using MEDIUM")
+            regime = VolatilityRegime.MEDIUM
         if regime not in self.config.allowed_regimes:
             # 레짐이 맞지 않으면 포지션 있을 때 청산
             if self.state.position != PositionSide.FLAT:

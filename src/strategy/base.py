@@ -62,8 +62,18 @@ class BarData:
     up_prob: float = 0.5
     down_prob: float = 0.5
 
-    # 기타
-    regime: str = "MEDIUM"
+    # 변동성 레짐 (None = not yet determined, requires warm-up period)
+    regime: Optional[str] = None
+
+    # Orderbook data for arbitrage (MODE_A)
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+    bid_qty1: float = 0.0
+    bid_qty2: float = 0.0
+    bid_qty3: float = 0.0
+    ask_qty1: float = 0.0
+    ask_qty2: float = 0.0
+    ask_qty3: float = 0.0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BarData":
@@ -84,7 +94,16 @@ class BarData:
             hv=data.get('hv', 0),
             up_prob=data.get('up_prob', 0.5),
             down_prob=data.get('down_prob', 0.5),
-            regime=data.get('regime', 'MEDIUM'),
+            regime=data.get('regime'),  # None if not provided (warm-up period)
+            # Orderbook data for arbitrage
+            best_bid=data.get('best_bid', data.get('bid_price_1', 0)),
+            best_ask=data.get('best_ask', data.get('ask_price_1', 0)),
+            bid_qty1=data.get('bid_qty1', data.get('bid_qty_1', 0)),
+            bid_qty2=data.get('bid_qty2', data.get('bid_qty_2', 0)),
+            bid_qty3=data.get('bid_qty3', data.get('bid_qty_3', 0)),
+            ask_qty1=data.get('ask_qty1', data.get('ask_qty_1', 0)),
+            ask_qty2=data.get('ask_qty2', data.get('ask_qty_2', 0)),
+            ask_qty3=data.get('ask_qty3', data.get('ask_qty_3', 0)),
         )
 
 

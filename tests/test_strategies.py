@@ -783,5 +783,233 @@ class TestAdaptiveMicrostructureStrategy:
         assert strategy.config.entry_score_threshold == 0.65
 
 
+class TestRegimeIntegration:
+    """레짐 통합 테스트 - 파이프라인 및 전략 연동"""
+
+    def test_bardata_regime_none_default(self):
+        """BarData의 regime 기본값이 None인지 확인"""
+        bar = BarData(
+            datetime=datetime.now(),
+            open=350.0,
+            high=350.1,
+            low=349.9,
+            close=350.0,
+            volume=100,
+        )
+        assert bar.regime is None
+
+    def test_bardata_from_dict_without_regime(self):
+        """딕셔너리에 regime이 없으면 None"""
+        data = {
+            'datetime': datetime.now(),
+            'open': 350.0,
+            'high': 350.1,
+            'low': 349.9,
+            'close': 350.0,
+            'volume': 100,
+        }
+        bar = BarData.from_dict(data)
+        assert bar.regime is None
+
+    def test_bardata_from_dict_with_regime(self):
+        """딕셔너리에 regime이 있으면 해당 값 사용"""
+        data = {
+            'datetime': datetime.now(),
+            'open': 350.0,
+            'high': 350.1,
+            'low': 349.9,
+            'close': 350.0,
+            'volume': 100,
+            'regime': 'HIGH',
+        }
+        bar = BarData.from_dict(data)
+        assert bar.regime == 'HIGH'
+
+    def test_breakout_strategy_holds_on_none_regime(self):
+        """Breakout 전략은 regime이 None이면 HOLD"""
+        strategy = BreakoutStrategy()
+
+        # 히스토리 채우기 (regime=None)
+        for i in range(30):
+            bar = {
+                'datetime': datetime.now(),
+                'open': 350.0,
+                'high': 350.2,
+                'low': 349.8,
+                'close': 350.0,
+                'volume': 100,
+                'buy_volume_ratio': 0.5,
+                # regime 없음 (None)
+            }
+            strategy.on_bar(bar)
+
+        # 돌파 조건이 충족되어도 regime이 None이면 HOLD
+        bar = {
+            'datetime': datetime.now(),
+            'open': 351.0,
+            'high': 352.0,
+            'low': 351.0,
+            'close': 352.0,
+            'volume': 300,
+            'buy_volume_ratio': 0.8,
+            'atr': 0.5,
+            # regime 없음 (None)
+        }
+        signal = strategy.on_bar(bar)
+        assert signal == Signal.HOLD
+
+    def test_breakout_strategy_trades_with_high_regime(self):
+        """Breakout 전략은 HIGH 레짐에서 거래"""
+        from src.strategy.strategies.breakout import BreakoutConfig
+        config = BreakoutConfig(
+            lookback_period=20,
+            breakout_buffer=0.02,
+            volume_confirm=True,
+            volume_threshold=1.5,
+            trade_flow_confirm=True,
+            buy_ratio_threshold=0.55,
+        )
+        strategy = BreakoutStrategy(config)
+
+        # 히스토리 채우기 (HIGH regime)
+        for i in range(30):
+            bar = {
+                'datetime': datetime.now(),
+                'open': 350.0,
+                'high': 350.2,
+                'low': 349.8,
+                'close': 350.0,
+                'volume': 100,
+                'buy_volume_ratio': 0.5,
+                'regime': 'HIGH',
+            }
+            strategy.on_bar(bar)
+
+        # 돌파 조건 충족 + HIGH 레짐
+        bar = {
+            'datetime': datetime.now(),
+            'open': 351.0,
+            'high': 351.0,
+            'low': 350.5,
+            'close': 351.5,  # > 350.2 + 0.02
+            'volume': 200,
+            'buy_volume_ratio': 0.7,
+            'atr': 0.5,
+            'regime': 'HIGH',
+        }
+        signal = strategy.on_bar(bar)
+        assert signal == Signal.BUY
+
+    def test_mean_reversion_holds_on_none_regime(self):
+        """Mean Reversion 전략은 regime이 None이면 HOLD"""
+        strategy = MeanReversionStrategy()
+
+        # 히스토리 채우기
+        for i in range(30):
+            bar = {
+                'datetime': datetime.now(),
+                'open': 350.0,
+                'high': 350.1,
+                'low': 349.9,
+                'close': 350.0,
+                'volume': 100,
+                'ofi': 0.0,
+                # regime 없음
+            }
+            strategy.on_bar(bar)
+
+        # 하단 밴드 터치 (매수 조건) but regime None
+        bar = {
+            'datetime': datetime.now(),
+            'open': 348.0,
+            'high': 348.1,
+            'low': 347.9,
+            'close': 348.0,
+            'volume': 100,
+            'ofi': 10.0,
+            # regime 없음
+        }
+        signal = strategy.on_bar(bar)
+        assert signal == Signal.HOLD
+
+    def test_pure_micro_uses_medium_on_none_regime(self):
+        """PureMicro 전략은 regime이 None이면 MEDIUM으로 처리"""
+        from src.strategy import PureMicrostructureStrategy
+        from src.strategy.base import BarData
+
+        strategy = PureMicrostructureStrategy()
+
+        # 히스토리 채우기
+        for i in range(25):
+            bar = {
+                'datetime': datetime.now(),
+                'open': 350.0,
+                'high': 350.1,
+                'low': 349.9,
+                'close': 350.0,
+                'volume': 100,
+                'ofi_zscore': 2.5,
+                # regime 없음
+            }
+            strategy.on_bar(bar)
+
+        # regime이 None인 상태에서 점수 계산
+        bar_data = BarData(
+            datetime=datetime.now(),
+            open=350.0,
+            high=350.1,
+            low=349.9,
+            close=350.0,
+            volume=100,
+            regime=None,  # None
+        )
+
+        # _calculate_regime_score에서 MEDIUM으로 처리되어 0.5 반환
+        score = strategy._calculate_regime_score(bar_data, direction=1)
+        assert score == 0.5  # MEDIUM regime score
+
+    def test_adaptive_micro_uses_medium_config_on_none_regime(self):
+        """AdaptiveMicro 전략은 regime이 None이면 MEDIUM 설정 사용"""
+        from src.strategy import AdaptiveMicrostructureStrategy
+
+        strategy = AdaptiveMicrostructureStrategy()
+
+        # regime이 None인 바
+        bar = {
+            'datetime': datetime.now(),
+            'open': 350.0,
+            'high': 350.1,
+            'low': 349.9,
+            'close': 350.0,
+            'volume': 100,
+            # regime 없음
+        }
+        strategy.on_bar(bar)
+
+        # MEDIUM 설정이 적용됨
+        assert strategy.config.entry_score_threshold == 0.6
+        assert strategy.config.stop_loss_points == 1.5
+        assert strategy.config.take_profit_points == 3.0
+
+
+class TestFeatureProcessorRegimeIntegration:
+    """FeatureProcessor 레짐 통합 테스트"""
+
+    def test_symbol_state_has_regime_detector(self):
+        """SymbolState에 RegimeDetector가 포함되어 있는지 확인"""
+        from src.processor.feature_processor import SymbolState
+
+        state = SymbolState()
+        assert hasattr(state, 'regime_detector')
+        assert isinstance(state.regime_detector, RegimeDetector)
+
+    def test_regime_detector_initial_state_in_symbol_state(self):
+        """SymbolState의 RegimeDetector 초기 상태"""
+        from src.processor.feature_processor import SymbolState
+
+        state = SymbolState()
+        assert state.regime_detector.current_regime == VolatilityRegime.MEDIUM
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

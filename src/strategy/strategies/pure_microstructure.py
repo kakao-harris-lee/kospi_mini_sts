@@ -287,12 +287,18 @@ class PureMicrostructureStrategy(BaseStrategy):
         레짐 점수 계산
 
         레짐에 맞는 방향이면 높은 점수
+        regime이 None이면 warm-up 기간으로 MEDIUM 사용
         """
-        regime_str = bar.regime if bar.regime else "MEDIUM"
-        try:
-            regime = VolatilityRegime(regime_str)
-        except ValueError:
+        if bar.regime is None:
+            # Warm-up period: RegimeDetector not yet ready
+            logger.debug("Regime not available (warm-up period), using MEDIUM")
             regime = VolatilityRegime.MEDIUM
+        else:
+            try:
+                regime = VolatilityRegime(bar.regime)
+            except ValueError:
+                logger.warning(f"Invalid regime value: {bar.regime}, using MEDIUM")
+                regime = VolatilityRegime.MEDIUM
 
         # LOW 레짐: 역추세 선호 (극단에서 반대 방향)
         if regime == VolatilityRegime.LOW:
@@ -479,11 +485,15 @@ class AdaptiveMicrostructureStrategy(PureMicrostructureStrategy):
 
     def generate_signal(self, bar: BarData) -> Signal:
         """시그널 생성 (레짐 적응)"""
-        regime_str = bar.regime if bar.regime else "MEDIUM"
-        try:
-            regime = VolatilityRegime(regime_str)
-        except ValueError:
+        if bar.regime is None:
+            # Warm-up period: RegimeDetector not yet ready
             regime = VolatilityRegime.MEDIUM
+        else:
+            try:
+                regime = VolatilityRegime(bar.regime)
+            except ValueError:
+                logger.warning(f"Invalid regime value: {bar.regime}, using MEDIUM")
+                regime = VolatilityRegime.MEDIUM
 
         self._apply_regime_config(regime)
         return super().generate_signal(bar)
