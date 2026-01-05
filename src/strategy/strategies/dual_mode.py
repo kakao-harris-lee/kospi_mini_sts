@@ -11,6 +11,7 @@ State Machine:
 """
 import time
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -19,7 +20,23 @@ from ..base import BaseStrategy, Signal, PositionSide, BarData
 from ..arbitrage import ArbitrageEngine
 from ..trend import TrendEngine
 
+# Telegram notifications
+try:
+    from src.common.telegram import TelegramNotifier
+    _notifier = TelegramNotifier(check_trading_day=False)  # Always send during trading
+except ImportError:
+    _notifier = None
+
 logger = logging.getLogger(__name__)
+
+
+def _send_telegram(message: str) -> None:
+    """Send Telegram notification (non-blocking)."""
+    if _notifier:
+        try:
+            _notifier.send(message)
+        except Exception as e:
+            logger.warning(f"Telegram send failed: {e}")
 
 
 class TradingMode(Enum):
@@ -89,6 +106,7 @@ class DualModeStrategy(BaseStrategy):
 
         # Current mode
         self.current_mode = TradingMode.AVOID
+        self._prev_mode = TradingMode.AVOID  # Track mode changes
         self.active_engine: Optional[str] = None  # "arb" or "trend"
 
         # Statistics
@@ -100,6 +118,10 @@ class DualModeStrategy(BaseStrategy):
             'mode_a_signals': 0,
             'mode_b_signals': 0,
         }
+
+        # Last notification time to avoid spam
+        self._last_mode_notify = 0
+        self._mode_notify_cooldown = 60  # seconds
 
     def _determine_mode(self, bar: BarData) -> TradingMode:
         """Determine trading mode based on current conditions."""
@@ -126,6 +148,13 @@ class DualModeStrategy(BaseStrategy):
         mode = self._determine_mode(bar)
         self.current_mode = mode
 
+        # Notify on mode change (with cooldown to avoid spam)
+        now = time.time()
+        if mode != self._prev_mode and (now - self._last_mode_notify) > self._mode_notify_cooldown:
+            self._notify_mode_change(self._prev_mode, mode, bar)
+            self._last_mode_notify = now
+        self._prev_mode = mode
+
         if mode == TradingMode.AVOID:
             self._stats['avoid_bars'] += 1
             return Signal.HOLD
@@ -137,6 +166,22 @@ class DualModeStrategy(BaseStrategy):
         else:  # MODE_B
             self._stats['mode_b_bars'] += 1
             return self._process_mode_b(bar)
+
+    def _notify_mode_change(self, prev: TradingMode, curr: TradingMode, bar: BarData) -> None:
+        """Send Telegram notification for mode change."""
+        mode_icons = {
+            TradingMode.AVOID: "⏸️",
+            TradingMode.MODE_A: "🎯",
+            TradingMode.MODE_B: "📈",
+        }
+        msg = (
+            f"{mode_icons.get(curr, '')} <b>Mode Change</b>\n"
+            f"{prev.value} → {curr.value}\n"
+            f"Price: {bar.close:.2f}\n"
+            f"Spread: {bar.spread:.2f}\n"
+            f"OFI Z: {bar.ofi_zscore:.2f}"
+        )
+        _send_telegram(msg)
 
     def _process_mode_a(self, bar: BarData) -> Signal:
         """Process MODE_A: Arbitrage."""
@@ -158,10 +203,12 @@ class DualModeStrategy(BaseStrategy):
         if signal.action == "BUY":
             self._stats['mode_a_signals'] += 1
             self.active_engine = "arb"
+            self._notify_signal("BUY", "MODE_A", bar, signal.reason)
             return Signal.BUY
         elif signal.action == "SELL":
             self._stats['mode_a_signals'] += 1
             self.active_engine = "arb"
+            self._notify_signal("SELL", "MODE_A", bar, signal.reason)
             return Signal.SELL
 
         return Signal.HOLD
@@ -191,13 +238,16 @@ class DualModeStrategy(BaseStrategy):
         if signal.action == "OPEN_LONG":
             self._stats['mode_b_signals'] += 1
             self.active_engine = "trend"
+            self._notify_signal("BUY", "MODE_B", bar, f"LONG entry (DL: {bar.up_prob:.1%})")
             return Signal.BUY
         elif signal.action == "OPEN_SHORT":
             self._stats['mode_b_signals'] += 1
             self.active_engine = "trend"
+            self._notify_signal("SELL", "MODE_B", bar, f"SHORT entry (DL: {1-bar.up_prob:.1%})")
             return Signal.SELL
         elif signal.action == "CLOSE":
             self.active_engine = None
+            self._notify_close(bar, signal.reason)
             # Return opposite signal to close
             if self.state.position == PositionSide.LONG:
                 return Signal.SELL
@@ -205,6 +255,29 @@ class DualModeStrategy(BaseStrategy):
                 return Signal.BUY
 
         return Signal.HOLD
+
+    def _notify_signal(self, action: str, mode: str, bar: BarData, reason: str) -> None:
+        """Send Telegram notification for trading signal."""
+        icon = "🟢" if action == "BUY" else "🔴"
+        msg = (
+            f"{icon} <b>{action} Signal</b> ({mode})\n"
+            f"Price: {bar.close:.2f}\n"
+            f"Reason: {reason}\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        _send_telegram(msg)
+        logger.info(f"Signal: {action} @ {bar.close:.2f} ({mode}) - {reason}")
+
+    def _notify_close(self, bar: BarData, reason: str) -> None:
+        """Send Telegram notification for position close."""
+        msg = (
+            f"🔒 <b>Position Closed</b>\n"
+            f"Price: {bar.close:.2f}\n"
+            f"Reason: {reason}\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        _send_telegram(msg)
+        logger.info(f"Close @ {bar.close:.2f} - {reason}")
 
     def get_mode_name(self) -> str:
         """Get current mode name."""
