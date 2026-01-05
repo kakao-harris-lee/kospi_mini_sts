@@ -5,11 +5,15 @@ All 3 conditions must agree for entry:
 1. Deep Learning: P(Up) > 85% or P(Down) > 85%
 2. Moving Average: MA(20) > MA(60) for long, MA(20) < MA(60) for short
 3. Ichimoku: Price above cloud for long, price below cloud for short
+
+Multi-Horizon Mode ("Shortest Confirms Longest"):
+- h10 sets direction (> 0.70 for LONG, < 0.30 for SHORT)
+- h1 or h3 confirms timing (> 0.60 for LONG, < 0.40 for SHORT)
 """
 
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 from .technical_indicators import TechnicalData
 
@@ -25,6 +29,9 @@ class FilterResult:
     dl_passed: bool
     ma_passed: bool
     ichimoku_passed: bool
+    # Multi-horizon info
+    trigger_horizon: int = 0  # Which horizon triggered (10)
+    confirm_horizon: int = 0  # Which horizon confirmed (1 or 3)
 
     @property
     def all_passed(self) -> bool:
@@ -175,6 +182,138 @@ class EnsembleFilter:
             dl_passed=dl_passed,
             ma_passed=ma_passed,
             ichimoku_passed=ichimoku_passed,
+        )
+
+    def check_entry_multi_horizon(
+        self,
+        horizon_probs: Dict[int, float],
+        tech: TechnicalData,
+    ) -> FilterResult:
+        """
+        Check entry using multi-horizon "Shortest Confirms Longest" strategy.
+
+        h10 sets direction, h1/h3 confirm timing.
+
+        LONG: h10 > 0.70 AND (h1 > 0.60 OR h3 > 0.60) + MA + Ichimoku
+        SHORT: h10 < 0.30 AND (h1 < 0.40 OR h3 < 0.40) + MA + Ichimoku
+
+        Args:
+            horizon_probs: {1: up_prob, 3: up_prob, 5: up_prob, 10: up_prob}
+            tech: Technical indicator data
+
+        Returns:
+            FilterResult with entry decision
+        """
+        self._stats['total_checks'] += 1
+
+        h1 = horizon_probs.get(1, 0.5)
+        h3 = horizon_probs.get(3, 0.5)
+        h5 = horizon_probs.get(5, 0.5)
+        h10 = horizon_probs.get(10, 0.5)
+
+        # Check if technical data is ready
+        if not tech.is_ready:
+            self._stats['rejected_not_ready'] += 1
+            return FilterResult(
+                can_enter=False,
+                direction=None,
+                rejection_reason="Technical indicators warming up",
+                dl_passed=False,
+                ma_passed=False,
+                ichimoku_passed=False,
+            )
+
+        # Multi-horizon thresholds
+        H10_LONG_THRESHOLD = 0.70
+        H10_SHORT_THRESHOLD = 0.30
+        CONFIRM_LONG_THRESHOLD = 0.60
+        CONFIRM_SHORT_THRESHOLD = 0.40
+
+        # Check LONG: h10 bullish + short-term confirms
+        if h10 > H10_LONG_THRESHOLD:
+            confirm_h1 = h1 > CONFIRM_LONG_THRESHOLD
+            confirm_h3 = h3 > CONFIRM_LONG_THRESHOLD
+
+            if confirm_h1 or confirm_h3:
+                # DL multi-horizon passed - check MA + Ichimoku
+                ma_passed = tech.ma_fast > tech.ma_slow
+                ichimoku_passed = tech.current_price > tech.cloud_top
+
+                if ma_passed and ichimoku_passed:
+                    self._stats['long_signals'] += 1
+                    logger.info(
+                        f"LONG (multi-horizon): h10={h10:.1%}, h1={h1:.1%}, h3={h3:.1%}, "
+                        f"confirm={'h1' if confirm_h1 else 'h3'}"
+                    )
+                    return FilterResult(
+                        can_enter=True,
+                        direction="LONG",
+                        rejection_reason=None,
+                        dl_passed=True,
+                        ma_passed=True,
+                        ichimoku_passed=True,
+                        trigger_horizon=10,
+                        confirm_horizon=1 if confirm_h1 else 3,
+                    )
+                else:
+                    rejection = "MA bearish" if not ma_passed else "Price below cloud"
+                    self._stats['rejected_ma' if not ma_passed else 'rejected_ichimoku'] += 1
+                    return FilterResult(
+                        can_enter=False,
+                        direction=None,
+                        rejection_reason=f"Multi-H LONG rejected: {rejection}",
+                        dl_passed=True,
+                        ma_passed=ma_passed,
+                        ichimoku_passed=ichimoku_passed,
+                    )
+
+        # Check SHORT: h10 bearish + short-term confirms
+        if h10 < H10_SHORT_THRESHOLD:
+            confirm_h1 = h1 < CONFIRM_SHORT_THRESHOLD
+            confirm_h3 = h3 < CONFIRM_SHORT_THRESHOLD
+
+            if confirm_h1 or confirm_h3:
+                # DL multi-horizon passed - check MA + Ichimoku
+                ma_passed = tech.ma_fast < tech.ma_slow
+                ichimoku_passed = tech.current_price < tech.cloud_bottom
+
+                if ma_passed and ichimoku_passed:
+                    self._stats['short_signals'] += 1
+                    logger.info(
+                        f"SHORT (multi-horizon): h10={h10:.1%}, h1={h1:.1%}, h3={h3:.1%}, "
+                        f"confirm={'h1' if confirm_h1 else 'h3'}"
+                    )
+                    return FilterResult(
+                        can_enter=True,
+                        direction="SHORT",
+                        rejection_reason=None,
+                        dl_passed=True,
+                        ma_passed=True,
+                        ichimoku_passed=True,
+                        trigger_horizon=10,
+                        confirm_horizon=1 if confirm_h1 else 3,
+                    )
+                else:
+                    rejection = "MA bullish" if not ma_passed else "Price above cloud"
+                    self._stats['rejected_ma' if not ma_passed else 'rejected_ichimoku'] += 1
+                    return FilterResult(
+                        can_enter=False,
+                        direction=None,
+                        rejection_reason=f"Multi-H SHORT rejected: {rejection}",
+                        dl_passed=True,
+                        ma_passed=ma_passed,
+                        ichimoku_passed=ichimoku_passed,
+                    )
+
+        # No clear direction from multi-horizon
+        self._stats['rejected_dl'] += 1
+        return FilterResult(
+            can_enter=False,
+            direction=None,
+            rejection_reason=f"No multi-H signal: h10={h10:.1%}, h1={h1:.1%}, h3={h3:.1%}",
+            dl_passed=False,
+            ma_passed=False,
+            ichimoku_passed=False,
         )
 
     def check_long_only(self, up_prob: float, tech: TechnicalData) -> Tuple[bool, str]:

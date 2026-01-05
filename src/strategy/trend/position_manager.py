@@ -29,6 +29,7 @@ class ExitReason(Enum):
     TIME_CUT = "TIME_CUT"
     MANUAL = "MANUAL"
     SIGNAL = "SIGNAL"
+    DL_REVERSAL = "DL_REVERSAL"  # Multi-horizon h10 reversal
 
 
 @dataclass

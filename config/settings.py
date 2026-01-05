@@ -68,6 +68,10 @@ class ModelConfig:
     device: str = os.getenv("MODEL_DEVICE", "auto")  # cuda, mps, cpu, auto
     lookback_window: int = 60  # 60분 시퀀스
     model_version: str = "v1.0"
+    # Ensemble settings
+    use_ensemble: bool = os.getenv("USE_ENSEMBLE", "false").lower() == "true"
+    ensemble_dir: str = os.getenv("ENSEMBLE_DIR", "models/ensemble")
+    ensemble_horizons: str = "1,3,5,10"  # comma-separated
 
 
 @dataclass
