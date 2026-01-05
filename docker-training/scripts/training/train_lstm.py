@@ -20,8 +20,8 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-# 프로젝트 경로 추가
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+# 프로젝트 경로 추가 (docker-training/scripts/training → kospi_mini_sts)
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import settings
@@ -32,10 +32,10 @@ from config.settings import settings
 # ============================================================
 
 def load_data_from_clickhouse(
-    host: str = "localhost",
-    port: int = 18123,
-    database: str = "kospi",
-    password: str = "@1tidh6ls6ls",
+    host: str = None,
+    port: int = None,
+    database: str = None,
+    password: str = None,
     days: int = 30
 ) -> pd.DataFrame:
     """
@@ -53,12 +53,18 @@ def load_data_from_clickhouse(
     """
     import clickhouse_connect
 
+    # Use settings as defaults
+    host = host or settings.clickhouse.host
+    port = port or settings.clickhouse.port
+    database = database or settings.clickhouse.database
+    password = password or settings.clickhouse.password
+
     client = clickhouse_connect.get_client(
         host=host,
         port=port,
         database=database,
         username="default",
-        password=password
+        password=password or None
     )
 
     query = f"""
