@@ -28,6 +28,7 @@ from config.settings import settings
 from src.common import setup_logging, init_metrics, get_metrics
 from src.collector.kis_websocket import KISWebSocketAdapter, KISConfig, KISMarket
 from src.collector.data_collector import TickData
+from src.common.futures_code import get_front_month_code, get_kis_code
 
 logger = setup_logging("tick_collector")
 
@@ -215,8 +216,9 @@ def main():
         logger.error("KIS_APP_KEY and KIS_APP_SECRET must be set")
         sys.exit(1)
 
-    # 현재 근월물 코드
-    futures_code = os.getenv("FUTURES_CODE", get_current_futures_code())
+    # 현재 근월물 코드 (KRX format: 101H26)
+    # KIS WebSocket uses KRX codes, not short codes (A05601)
+    futures_code = os.getenv("FUTURES_CODE") or get_front_month_code()
 
     logger.info(f"Tick Collector Configuration:")
     logger.info(f"  Futures Code: {futures_code}")
