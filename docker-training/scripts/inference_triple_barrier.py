@@ -106,7 +106,7 @@ class TripleBarrierPredictor:
         self,
         model_dir: str = "models/triple_barrier",
         device: str = "auto",
-        confidence_threshold: float = 0.5
+        confidence_threshold: float = 0.7
     ):
         """
         Initialize the predictor.
