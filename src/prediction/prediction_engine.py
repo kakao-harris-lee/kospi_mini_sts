@@ -31,8 +31,6 @@ from src.common import (
     setup_logging,
     trading_logger
 )
-from src.prediction.ensemble_predictor import EnsemblePredictor, EnsembleSignal
-
 logger = setup_logging("prediction")
 
 
@@ -316,21 +314,9 @@ class PredictionEngine(StreamConsumer):
         self.publisher = StreamPublisher(settings.redis.prediction_stream)
         self.redis = RedisClient.get_client()
 
-        # Ensemble or single model
-        self.use_ensemble = settings.model.use_ensemble
-        if self.use_ensemble:
-            horizons = [int(h) for h in settings.model.ensemble_horizons.split(",")]
-            self.ensemble_predictor = EnsemblePredictor(
-                model_dir=settings.model.ensemble_dir,
-                horizons=horizons,
-                device=settings.model.device
-            )
-            self.model_manager = None
-            logger.info(f"Using ensemble mode with horizons: {horizons}")
-        else:
-            self.model_manager = ModelManager()
-            self.ensemble_predictor = None
-            logger.info("Using single model mode")
+        # Single model mode (ensemble removed - use triple barrier in strategy)
+        self.model_manager = ModelManager()
+        logger.info("Using single model mode")
 
         self.lookback = settings.model.lookback_window
 
@@ -340,10 +326,7 @@ class PredictionEngine(StreamConsumer):
     def start(self):
         """Prediction Engine 시작"""
         # 모델 로드
-        if self.use_ensemble:
-            self.ensemble_predictor.load_models()
-        else:
-            self.model_manager.load_model()
+        self.model_manager.load_model()
 
         # Consumer 루프 시작
         self.run()
@@ -427,96 +410,58 @@ class PredictionEngine(StreamConsumer):
             # 3. 추론 실행
             start_time = time.time()
 
-            if self.use_ensemble:
-                # Ensemble mode: multi-horizon predictions
-                ensemble_probs = self.ensemble_predictor.predict(sequence)
-                signal = self.ensemble_predictor.get_signal(sequence)
-                inference_time_ms = (time.time() - start_time) * 1000
+            probs = self.model_manager.predict(sequence)
+            inference_time_ms = (time.time() - start_time) * 1000
 
-                # Use h5 as primary for backward compatibility
-                up_prob = ensemble_probs.get(5, 0.5)
-                down_prob = 1.0 - up_prob
-                hold_prob = 0.0
+            if probs is None:
+                return True
 
-                # 5. PREDICTION_STREAM에 발행 (ensemble format)
-                self.publisher.publish({
-                    'symbol': symbol,
-                    'timestamp': time.time(),
-                    'up_prob': up_prob,
-                    'down_prob': down_prob,
-                    'hold_prob': hold_prob,
-                    'model_version': 'ensemble',
-                    'inference_time_ms': inference_time_ms,
-                    # Multi-horizon data
-                    'ensemble': True,
-                    'up_prob_h1': ensemble_probs.get(1, 0.5),
-                    'up_prob_h3': ensemble_probs.get(3, 0.5),
-                    'up_prob_h5': ensemble_probs.get(5, 0.5),
-                    'up_prob_h10': ensemble_probs.get(10, 0.5),
-                    'signal_direction': signal.direction,
-                    'signal_confidence': signal.confidence,
-                })
+            # 4. 결과 구성
+            result = PredictionResult(
+                symbol=symbol,
+                timestamp=time.time(),
+                hold_prob=float(probs[0]),
+                up_prob=float(probs[1]),
+                down_prob=float(probs[2]),
+                model_version=self.model_manager.model_version,
+                inference_time_ms=inference_time_ms
+            )
 
-                logger.debug(
-                    f"Ensemble: {symbol} h1={ensemble_probs.get(1, 0):.2f} "
-                    f"h3={ensemble_probs.get(3, 0):.2f} h5={ensemble_probs.get(5, 0):.2f} "
-                    f"h10={ensemble_probs.get(10, 0):.2f} -> {signal.direction}"
-                )
-            else:
-                # Single model mode
-                probs = self.model_manager.predict(sequence)
-                inference_time_ms = (time.time() - start_time) * 1000
+            # 상세 로깅: 예측 결과
+            trading_logger.log_prediction_output(
+                symbol=result.symbol,
+                timestamp=result.timestamp,
+                up_prob=result.up_prob,
+                down_prob=result.down_prob,
+                hold_prob=result.hold_prob,
+                inference_time_ms=result.inference_time_ms,
+                model_version=result.model_version
+            )
 
-                if probs is None:
-                    return True
+            # 5. PREDICTION_STREAM에 발행
+            self.publisher.publish({
+                'symbol': result.symbol,
+                'timestamp': result.timestamp,
+                'up_prob': result.up_prob,
+                'down_prob': result.down_prob,
+                'hold_prob': result.hold_prob,
+                'model_version': result.model_version,
+                'inference_time_ms': result.inference_time_ms
+            })
 
-                # 4. 결과 구성
-                result = PredictionResult(
-                    symbol=symbol,
-                    timestamp=time.time(),
-                    hold_prob=float(probs[0]),
-                    up_prob=float(probs[1]),
-                    down_prob=float(probs[2]),
-                    model_version=self.model_manager.model_version,
-                    inference_time_ms=inference_time_ms
-                )
+            logger.debug(
+                f"Prediction: {symbol} Up={result.up_prob:.2f} "
+                f"Down={result.down_prob:.2f} ({inference_time_ms:.1f}ms)"
+            )
 
-                # 상세 로깅: 예측 결과
-                trading_logger.log_prediction_output(
-                    symbol=result.symbol,
-                    timestamp=result.timestamp,
-                    up_prob=result.up_prob,
-                    down_prob=result.down_prob,
-                    hold_prob=result.hold_prob,
-                    inference_time_ms=result.inference_time_ms,
-                    model_version=result.model_version
-                )
-
-                # 5. PREDICTION_STREAM에 발행
-                self.publisher.publish({
-                    'symbol': result.symbol,
-                    'timestamp': result.timestamp,
-                    'up_prob': result.up_prob,
-                    'down_prob': result.down_prob,
-                    'hold_prob': result.hold_prob,
-                    'model_version': result.model_version,
-                    'inference_time_ms': result.inference_time_ms
-                })
-
-                logger.debug(
-                    f"Prediction: {symbol} Up={result.up_prob:.2f} "
-                    f"Down={result.down_prob:.2f} ({inference_time_ms:.1f}ms)"
-                )
-            
             # 통계 업데이트
             self._inference_count += 1
             self._total_inference_time += inference_time_ms
 
             if self._inference_count % 100 == 0:
                 avg_time = self._total_inference_time / self._inference_count
-                mode = "ensemble" if self.use_ensemble else "single"
                 logger.info(
-                    f"Predictions ({mode}): {self._inference_count}, "
+                    f"Predictions: {self._inference_count}, "
                     f"Avg inference: {avg_time:.2f}ms"
                 )
 

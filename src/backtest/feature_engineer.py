@@ -461,115 +461,25 @@ def add_ensemble_predictions(
     """
     Add multi-horizon ensemble predictions to DataFrame.
 
-    Uses EnsemblePredictor to generate predictions for horizons 1, 3, 5, 10 min.
+    DEPRECATED: Ensemble predictor has been removed. Use triple barrier classifier
+    in DualModeStrategy instead. This function now just adds default 0.5 values.
 
     Args:
         df: OHLCV DataFrame (datetime, open, high, low, close, volume)
-        model_dir: Directory containing ensemble models
-        seq_len: Sequence length (default: 60)
+        model_dir: Directory containing ensemble models (unused)
+        seq_len: Sequence length (unused)
 
     Returns:
-        DataFrame with up_prob_h1, up_prob_h3, up_prob_h5, up_prob_h10 columns
+        DataFrame with up_prob_h1, up_prob_h3, up_prob_h5, up_prob_h10 columns (all 0.5)
     """
-    from pathlib import Path
-
-    try:
-        from src.prediction.ensemble_predictor import EnsemblePredictor
-    except ImportError:
-        print("EnsemblePredictor not available, using default 0.5")
-        df['up_prob_h1'] = 0.5
-        df['up_prob_h3'] = 0.5
-        df['up_prob_h5'] = 0.5
-        df['up_prob_h10'] = 0.5
-        return df
-
     df = df.copy()
 
-    # Check if ensemble models exist
-    model_path = Path(model_dir)
-    if not model_path.exists():
-        print(f"Ensemble directory not found: {model_dir}, using default 0.5")
-        df['up_prob_h1'] = 0.5
-        df['up_prob_h3'] = 0.5
-        df['up_prob_h5'] = 0.5
-        df['up_prob_h10'] = 0.5
-        return df
+    print("Note: Ensemble predictor removed. Using triple barrier in strategy layer.")
+    print("Adding default 0.5 values for up_prob_h* columns...")
 
-    # Load ensemble predictor
-    predictor = EnsemblePredictor(model_dir=model_dir)
-    if not predictor.load_models():
-        print("No ensemble models loaded, using default 0.5")
-        df['up_prob_h1'] = 0.5
-        df['up_prob_h3'] = 0.5
-        df['up_prob_h5'] = 0.5
-        df['up_prob_h10'] = 0.5
-        return df
-
-    # Get features from first model metadata
-    first_horizon = list(predictor.metadata.keys())[0]
-    meta = predictor.metadata[first_horizon]
-    features = meta.get('features', [
-        'returns', 'ma_ratio_5', 'ma_ratio_10', 'ma_ratio_20',
-        'rsi', 'bb_position', 'volume_ratio', 'volatility',
-        'hl_range', 'candle_body'
-    ])
-
-    # Compute features if not present
-    if 'returns' not in df.columns:
-        df['returns'] = df['close'].pct_change().fillna(0)
-    if 'ma_ratio_5' not in df.columns:
-        df['ma_ratio_5'] = df['close'] / df['close'].rolling(5).mean() - 1
-    if 'ma_ratio_10' not in df.columns:
-        df['ma_ratio_10'] = df['close'] / df['close'].rolling(10).mean() - 1
-    if 'ma_ratio_20' not in df.columns:
-        df['ma_ratio_20'] = df['close'] / df['close'].rolling(20).mean() - 1
-    if 'rsi' not in df.columns:
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss.replace(0, np.nan)
-        df['rsi'] = (100 - 100 / (1 + rs)).fillna(50) / 100
-    if 'bb_position' not in df.columns:
-        ma20 = df['close'].rolling(20).mean()
-        std20 = df['close'].rolling(20).std()
-        df['bb_position'] = ((df['close'] - ma20) / (2 * std20)).fillna(0).clip(-1, 1)
-    if 'volume_ratio' not in df.columns:
-        df['volume_ratio'] = (df['volume'] / df['volume'].rolling(20).mean()).fillna(1).clip(0, 5) / 5
-    if 'volatility' not in df.columns:
-        df['volatility'] = df['returns'].rolling(20).std().fillna(0) * 100
-    if 'hl_range' not in df.columns:
-        df['hl_range'] = ((df['high'] - df['low']) / df['close']).fillna(0)
-    if 'candle_body' not in df.columns:
-        df['candle_body'] = ((df['close'] - df['open']) / (df['high'] - df['low']).replace(0, np.nan)).fillna(0).clip(-1, 1)
-
-    # Fill NaN
-    for col in features:
-        if col in df.columns:
-            df[col] = df[col].fillna(0)
-
-    # Initialize prediction columns
-    horizons = [1, 3, 5, 10]
-    for h in horizons:
-        df[f'up_prob_h{h}'] = 0.5
-
-    # Generate predictions for each bar
-    print(f"Generating ensemble predictions for {len(df)} bars...")
-    for i in range(len(df)):
-        if i < seq_len - 1:
-            continue  # Keep default 0.5
-
-        seq_data = df[features].iloc[i-seq_len+1:i+1].values
-        probs = predictor.predict(seq_data)
-
-        for h in horizons:
-            if h in probs:
-                df.loc[df.index[i], f'up_prob_h{h}'] = probs[h]
-
-    # Summary
-    print(f"Ensemble predictions added:")
-    for h in horizons:
-        col = f'up_prob_h{h}'
-        if col in df.columns:
-            print(f"  h{h}: mean={df[col].mean():.3f}, std={df[col].std():.3f}")
+    df['up_prob_h1'] = 0.5
+    df['up_prob_h3'] = 0.5
+    df['up_prob_h5'] = 0.5
+    df['up_prob_h10'] = 0.5
 
     return df
