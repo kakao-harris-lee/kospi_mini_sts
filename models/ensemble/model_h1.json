@@ -2,7 +2,7 @@
   "model_type": "cnn-lstm",
   "input_dim": 10,
   "seq_len": 60,
-  "horizon": 5,
+  "horizon": 1,
   "threshold": 0.001,
   "features": [
     "returns",
@@ -16,9 +16,9 @@
     "hl_range",
     "candle_body"
   ],
-  "created_at": "2026-01-06T00:04:46.252116",
-  "train_samples": 1564,
-  "val_samples": 346,
+  "created_at": "2026-01-06T05:40:48.107130",
+  "train_samples": 1567,
+  "val_samples": 347,
   "cnn_channels": [
     32,
     64

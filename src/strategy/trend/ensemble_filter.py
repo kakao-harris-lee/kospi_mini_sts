@@ -7,17 +7,84 @@ All 3 conditions must agree for entry:
 3. Ichimoku: Price above cloud for long, price below cloud for short
 
 Multi-Horizon Mode ("Shortest Confirms Longest"):
-- h10 sets direction (> 0.70 for LONG, < 0.30 for SHORT)
-- h1 or h3 confirms timing (> 0.60 for LONG, < 0.40 for SHORT)
+- Uses z-score thresholds to handle model bias
+- h10 sets direction (z-score > threshold for LONG, z-score < -threshold for SHORT)
+- h1 or h3 confirms timing with lower z-score threshold
 """
 
 import logging
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict
+
+import numpy as np
 
 from .technical_indicators import TechnicalData
 
 logger = logging.getLogger(__name__)
+
+
+class ProbabilityCalibrator:
+    """
+    Running calibrator that tracks prediction distribution and computes z-scores.
+
+    Handles model bias by normalizing predictions relative to their actual distribution.
+    If a model consistently predicts 20% up_prob, a prediction of 30% would have a positive
+    z-score indicating "more bullish than usual".
+    """
+
+    def __init__(self, window_size: int = 200, min_samples: int = 50):
+        """
+        Args:
+            window_size: Number of recent predictions to track
+            min_samples: Minimum samples needed before calibration kicks in
+        """
+        self.window_size = window_size
+        self.min_samples = min_samples
+        self._history: Dict[int, deque] = {}  # horizon -> recent predictions
+
+    def update(self, horizon: int, prob: float) -> None:
+        """Add new prediction to history."""
+        if horizon not in self._history:
+            self._history[horizon] = deque(maxlen=self.window_size)
+        self._history[horizon].append(prob)
+
+    def get_zscore(self, horizon: int, prob: float) -> Optional[float]:
+        """
+        Compute z-score for a prediction.
+
+        Returns None if not enough samples yet.
+        """
+        if horizon not in self._history:
+            return None
+
+        history = self._history[horizon]
+        if len(history) < self.min_samples:
+            return None
+
+        mean = np.mean(history)
+        std = np.std(history)
+
+        if std < 0.001:  # Avoid division by zero only
+            return None
+
+        return (prob - mean) / std
+
+    def get_stats(self, horizon: int) -> Dict[str, float]:
+        """Get statistics for a horizon."""
+        if horizon not in self._history or len(self._history[horizon]) == 0:
+            return {'mean': 0.5, 'std': 0.1, 'count': 0}
+
+        history = self._history[horizon]
+        return {
+            'mean': float(np.mean(history)),
+            'std': float(np.std(history)),
+            'count': len(history),
+        }
+
+    def reset(self) -> None:
+        """Reset all history."""
+        self._history.clear()
 
 
 @dataclass
@@ -53,12 +120,24 @@ class EnsembleFilter:
     3. Ichimoku: Price < Cloud (both spans)
     """
 
-    def __init__(self, dl_threshold: float = 0.85):
+    def __init__(self, dl_threshold: float = 0.85, max_atr_threshold: float = 1.5):
         """
         Args:
             dl_threshold: Minimum probability for entry (default 85%)
+            max_atr_threshold: Skip trading if ATR exceeds this (default 1.5 points)
         """
         self.dl_threshold = dl_threshold
+        self.max_atr_threshold = max_atr_threshold
+
+        # Z-score based calibrator for multi-horizon mode
+        self.calibrator = ProbabilityCalibrator(window_size=200, min_samples=60)
+
+        # Z-score thresholds for calibrated signals
+        # Note: h1/h3 have asymmetric distributions (rarely go negative), so we use
+        # different thresholds for LONG vs SHORT confirmation
+        self.zscore_trigger_threshold = 1.0  # h10 must be this many stdevs from mean
+        self.zscore_long_confirm_threshold = 0.5  # h1/h3 for LONG confirmation
+        self.zscore_short_confirm_threshold = 0.0  # h1/h3 for SHORT (just needs to be below mean)
 
         # Statistics
         self._stats = {
@@ -69,6 +148,8 @@ class EnsembleFilter:
             'rejected_ma': 0,
             'rejected_ichimoku': 0,
             'rejected_not_ready': 0,
+            'calibrated_signals': 0,
+            'uncalibrated_signals': 0,
         }
 
     def check_entry(
@@ -190,12 +271,15 @@ class EnsembleFilter:
         tech: TechnicalData,
     ) -> FilterResult:
         """
-        Check entry using multi-horizon "Shortest Confirms Longest" strategy.
+        Check entry using multi-horizon "Shortest Confirms Longest" strategy with z-score calibration.
 
-        h10 sets direction, h1/h3 confirm timing.
+        Uses z-scores to handle model bias (e.g., if model always predicts ~20%, we look for
+        deviations from that baseline rather than absolute thresholds).
 
-        LONG: h10 > 0.70 AND (h1 > 0.60 OR h3 > 0.60) + MA + Ichimoku
-        SHORT: h10 < 0.30 AND (h1 < 0.40 OR h3 < 0.40) + MA + Ichimoku
+        h10 sets direction (z-score > 1.5 for LONG, z-score < -1.5 for SHORT)
+        h1/h3 confirm timing (z-score > 1.0 for LONG confirm, z-score < -1.0 for SHORT confirm)
+
+        Falls back to absolute thresholds during warm-up period.
 
         Args:
             horizon_probs: {1: up_prob, 3: up_prob, 5: up_prob, 10: up_prob}
@@ -211,6 +295,8 @@ class EnsembleFilter:
         h5 = horizon_probs.get(5, 0.5)
         h10 = horizon_probs.get(10, 0.5)
 
+        # Note: Calibrator is updated in TrendEngine.check_multi_horizon() before this method
+
         # Check if technical data is ready
         if not tech.is_ready:
             self._stats['rejected_not_ready'] += 1
@@ -223,27 +309,53 @@ class EnsembleFilter:
                 ichimoku_passed=False,
             )
 
-        # Multi-horizon thresholds
-        H10_LONG_THRESHOLD = 0.70
-        H10_SHORT_THRESHOLD = 0.30
-        CONFIRM_LONG_THRESHOLD = 0.60
-        CONFIRM_SHORT_THRESHOLD = 0.40
+        # Volatility filter: skip trading during high ATR periods (gap risk)
+        if tech.atr > self.max_atr_threshold:
+            return FilterResult(
+                can_enter=False,
+                direction=None,
+                rejection_reason=f"ATR {tech.atr:.2f} > max {self.max_atr_threshold:.2f}",
+                dl_passed=False,
+                ma_passed=False,
+                ichimoku_passed=False,
+            )
 
-        # Check LONG: h10 bullish + short-term confirms
-        if h10 > H10_LONG_THRESHOLD:
-            confirm_h1 = h1 > CONFIRM_LONG_THRESHOLD
-            confirm_h3 = h3 > CONFIRM_LONG_THRESHOLD
+        # Get z-scores for each horizon
+        z10 = self.calibrator.get_zscore(10, h10)
+        z1 = self.calibrator.get_zscore(1, h1)
+        z3 = self.calibrator.get_zscore(3, h3)
 
-            if confirm_h1 or confirm_h3:
-                # DL multi-horizon passed - check MA + Ichimoku
+        # Use z-score based thresholds if calibrated, otherwise fall back to absolute
+        if z10 is not None and z1 is not None and z3 is not None:
+            return self._check_calibrated(h1, h3, h10, z1, z3, z10, tech)
+        else:
+            return self._check_uncalibrated(h1, h3, h10, tech)
+
+    def _check_calibrated(
+        self,
+        h1: float, h3: float, h10: float,
+        z1: float, z3: float, z10: float,
+        tech: TechnicalData,
+    ) -> FilterResult:
+        """Check entry using z-score calibrated thresholds."""
+        # LONG: h10 z-score significantly above mean + confirmation
+        if z10 > self.zscore_trigger_threshold:
+            confirm_z1 = z1 > self.zscore_long_confirm_threshold
+            confirm_z3 = z3 > self.zscore_long_confirm_threshold
+
+            if confirm_z1 or confirm_z3:
+                # DL calibrated - check MA + Ichimoku
                 ma_passed = tech.ma_fast > tech.ma_slow
                 ichimoku_passed = tech.current_price > tech.cloud_top
 
                 if ma_passed and ichimoku_passed:
                     self._stats['long_signals'] += 1
+                    self._stats['calibrated_signals'] += 1
+                    h10_stats = self.calibrator.get_stats(10)
                     logger.info(
-                        f"LONG (multi-horizon): h10={h10:.1%}, h1={h1:.1%}, h3={h3:.1%}, "
-                        f"confirm={'h1' if confirm_h1 else 'h3'}"
+                        f"LONG (calibrated): z10={z10:.2f}, z1={z1:.2f}, z3={z3:.2f}, "
+                        f"h10={h10:.1%} (mean={h10_stats['mean']:.1%}), "
+                        f"confirm={'z1' if confirm_z1 else 'z3'}"
                     )
                     return FilterResult(
                         can_enter=True,
@@ -253,7 +365,7 @@ class EnsembleFilter:
                         ma_passed=True,
                         ichimoku_passed=True,
                         trigger_horizon=10,
-                        confirm_horizon=1 if confirm_h1 else 3,
+                        confirm_horizon=1 if confirm_z1 else 3,
                     )
                 else:
                     rejection = "MA bearish" if not ma_passed else "Price below cloud"
@@ -261,27 +373,31 @@ class EnsembleFilter:
                     return FilterResult(
                         can_enter=False,
                         direction=None,
-                        rejection_reason=f"Multi-H LONG rejected: {rejection}",
+                        rejection_reason=f"Calibrated LONG rejected: {rejection}",
                         dl_passed=True,
                         ma_passed=ma_passed,
                         ichimoku_passed=ichimoku_passed,
                     )
 
-        # Check SHORT: h10 bearish + short-term confirms
-        if h10 < H10_SHORT_THRESHOLD:
-            confirm_h1 = h1 < CONFIRM_SHORT_THRESHOLD
-            confirm_h3 = h3 < CONFIRM_SHORT_THRESHOLD
+        # SHORT: h10 z-score significantly below mean + confirmation
+        # Note: Use asymmetric threshold since h1/h3 rarely go very negative
+        if z10 < -self.zscore_trigger_threshold:
+            confirm_z1 = z1 < -self.zscore_short_confirm_threshold
+            confirm_z3 = z3 < -self.zscore_short_confirm_threshold
 
-            if confirm_h1 or confirm_h3:
-                # DL multi-horizon passed - check MA + Ichimoku
+            if confirm_z1 or confirm_z3:
+                # DL calibrated - check MA + Ichimoku
                 ma_passed = tech.ma_fast < tech.ma_slow
                 ichimoku_passed = tech.current_price < tech.cloud_bottom
 
                 if ma_passed and ichimoku_passed:
                     self._stats['short_signals'] += 1
+                    self._stats['calibrated_signals'] += 1
+                    h10_stats = self.calibrator.get_stats(10)
                     logger.info(
-                        f"SHORT (multi-horizon): h10={h10:.1%}, h1={h1:.1%}, h3={h3:.1%}, "
-                        f"confirm={'h1' if confirm_h1 else 'h3'}"
+                        f"SHORT (calibrated): z10={z10:.2f}, z1={z1:.2f}, z3={z3:.2f}, "
+                        f"h10={h10:.1%} (mean={h10_stats['mean']:.1%}), "
+                        f"confirm={'z1' if confirm_z1 else 'z3'}"
                     )
                     return FilterResult(
                         can_enter=True,
@@ -291,7 +407,7 @@ class EnsembleFilter:
                         ma_passed=True,
                         ichimoku_passed=True,
                         trigger_horizon=10,
-                        confirm_horizon=1 if confirm_h1 else 3,
+                        confirm_horizon=1 if confirm_z1 else 3,
                     )
                 else:
                     rejection = "MA bullish" if not ma_passed else "Price above cloud"
@@ -299,18 +415,39 @@ class EnsembleFilter:
                     return FilterResult(
                         can_enter=False,
                         direction=None,
-                        rejection_reason=f"Multi-H SHORT rejected: {rejection}",
+                        rejection_reason=f"Calibrated SHORT rejected: {rejection}",
                         dl_passed=True,
                         ma_passed=ma_passed,
                         ichimoku_passed=ichimoku_passed,
                     )
 
-        # No clear direction from multi-horizon
+        # No clear signal from z-scores
         self._stats['rejected_dl'] += 1
+        h10_stats = self.calibrator.get_stats(10)
         return FilterResult(
             can_enter=False,
             direction=None,
-            rejection_reason=f"No multi-H signal: h10={h10:.1%}, h1={h1:.1%}, h3={h3:.1%}",
+            rejection_reason=f"No z-score signal: z10={z10:.2f}, z1={z1:.2f}, z3={z3:.2f} (h10_mean={h10_stats['mean']:.1%})",
+            dl_passed=False,
+            ma_passed=False,
+            ichimoku_passed=False,
+        )
+
+    def _check_uncalibrated(
+        self,
+        h1: float, h3: float, h10: float,
+        tech: TechnicalData,
+    ) -> FilterResult:
+        """Fall back to absolute thresholds during warm-up (before enough samples for calibration)."""
+        # During warm-up, be very conservative - no signals
+        self._stats['uncalibrated_signals'] += 1
+        self._stats['rejected_dl'] += 1
+
+        samples = self.calibrator.get_stats(10).get('count', 0)
+        return FilterResult(
+            can_enter=False,
+            direction=None,
+            rejection_reason=f"Calibration warm-up: {samples}/{self.calibrator.min_samples} samples",
             dl_passed=False,
             ma_passed=False,
             ichimoku_passed=False,
@@ -346,6 +483,7 @@ class EnsembleFilter:
         }
 
     def reset_stats(self):
-        """Reset statistics counters."""
+        """Reset statistics counters and calibrator."""
         for key in self._stats:
             self._stats[key] = 0
+        self.calibrator.reset()

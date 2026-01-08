@@ -60,12 +60,14 @@ class DualModeConfig:
     arb_depth_multiplier: float = 3.0
 
     # MODE_B: Trend settings
-    trend_dl_threshold: float = 0.65  # Lowered for more signals
+    trend_dl_threshold: float = 0.80  # Raised to require stronger conviction
     trend_ma_fast: int = 20
     trend_ma_slow: int = 60
     trend_atr_period: int = 14
-    trend_atr_multiplier: float = 2.0
-    trend_time_cut_minutes: int = 30
+    trend_atr_multiplier: float = 2.0  # Reduced for tighter stops
+    trend_time_cut_minutes: int = 45  # Extended to let winners run
+    trend_max_stop_points: float = 1.5  # Cap max loss at 1.5 points = 75K KRW
+    trend_time_cut_atr_threshold: float = 0.3  # Lower bar for favorable movement
 
     # Order size
     order_size: float = 1.0
@@ -93,7 +95,9 @@ class DualModeStrategy(BaseStrategy):
             atr_period=self.config.trend_atr_period,
             atr_stop_multiplier=self.config.trend_atr_multiplier,
             time_cut_minutes=self.config.trend_time_cut_minutes,
+            time_cut_atr_threshold=self.config.trend_time_cut_atr_threshold,
             order_size=self.config.order_size,
+            max_stop_points=self.config.trend_max_stop_points,
         )
 
         # Current mode
@@ -135,6 +139,20 @@ class DualModeStrategy(BaseStrategy):
     def generate_signal(self, bar: BarData) -> Signal:
         """Generate signal using state machine logic."""
         self._stats['total_bars'] += 1
+
+        # ALWAYS update technical indicators and calibrator, regardless of mode
+        # This ensures proper warm-up for when we do enter MODE_B
+        self.trend_engine.update_bar(
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+        )
+
+        if bar.up_prob_h10 != 0.5:  # Has ensemble predictions
+            self.trend_engine.ensemble_filter.calibrator.update(1, bar.up_prob_h1)
+            self.trend_engine.ensemble_filter.calibrator.update(3, bar.up_prob_h3)
+            self.trend_engine.ensemble_filter.calibrator.update(5, bar.up_prob_h5)
+            self.trend_engine.ensemble_filter.calibrator.update(10, bar.up_prob_h10)
 
         # Determine current mode
         mode = self._determine_mode(bar)
@@ -210,13 +228,9 @@ class DualModeStrategy(BaseStrategy):
         return Signal.HOLD
 
     def _process_mode_b(self, bar: BarData) -> Signal:
-        """Process MODE_B: Trend Following."""
-        # Update technical indicators with bar data
-        tech = self.trend_engine.update_bar(
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-        )
+        """Process MODE_B: Trend Following with multi-horizon ensemble."""
+        # Technical indicators already updated in generate_signal()
+        tech = self.trend_engine.technical.get_current_data()
 
         # Update bid/ask for execution
         self.trend_engine.update_prices(
@@ -224,29 +238,51 @@ class DualModeStrategy(BaseStrategy):
             ask=bar.best_ask if bar.best_ask > 0 else bar.close,
         )
 
-        # Use up_prob if available, otherwise use MA + Ichimoku-based momentum
-        up_prob = bar.up_prob
-        if up_prob == 0.5 and tech is not None:
-            # Fallback: Use MA crossover + Ichimoku cloud as probability proxy
-            ma_bullish = tech.is_bullish_ma
-            above_cloud = tech.current_price > tech.cloud_top
-            below_cloud = tech.current_price < tech.cloud_bottom
+        timestamp = bar.datetime.timestamp() if bar.datetime else time.time()
 
-            if ma_bullish and above_cloud:
-                up_prob = 0.80  # Strong bullish - price above cloud, MA bullish
-            elif ma_bullish:
-                up_prob = 0.70  # Moderate bullish - MA bullish but not above cloud
-            elif not ma_bullish and below_cloud:
-                up_prob = 0.20  # Strong bearish - price below cloud, MA bearish
-            elif not ma_bullish:
-                up_prob = 0.30  # Moderate bearish - MA bearish but not below cloud
-
-        # Check for trend signal
-        signal = self.trend_engine.check(
-            up_prob=up_prob,
-            current_price=bar.close,
-            timestamp=bar.datetime.timestamp() if bar.datetime else time.time(),
+        # Check if multi-horizon predictions are available
+        has_ensemble = (
+            bar.up_prob_h10 != 0.5 or bar.up_prob_h1 != 0.5 or
+            bar.up_prob_h3 != 0.5 or bar.up_prob_h5 != 0.5
         )
+
+        if has_ensemble:
+            # Use multi-horizon "Shortest Confirms Longest" strategy
+            horizon_probs = {
+                1: bar.up_prob_h1,
+                3: bar.up_prob_h3,
+                5: bar.up_prob_h5,
+                10: bar.up_prob_h10,
+            }
+            signal = self.trend_engine.check_multi_horizon(
+                horizon_probs=horizon_probs,
+                current_price=bar.close,
+                timestamp=timestamp,
+            )
+            # Use h10 as the primary probability for logging
+            up_prob = bar.up_prob_h10
+        else:
+            # Fallback: Use single up_prob or MA + Ichimoku-based momentum
+            up_prob = bar.up_prob
+            if up_prob == 0.5 and tech is not None:
+                ma_bullish = tech.is_bullish_ma
+                above_cloud = tech.current_price > tech.cloud_top
+                below_cloud = tech.current_price < tech.cloud_bottom
+
+                if ma_bullish and above_cloud:
+                    up_prob = 0.80
+                elif ma_bullish:
+                    up_prob = 0.70
+                elif not ma_bullish and below_cloud:
+                    up_prob = 0.20
+                elif not ma_bullish:
+                    up_prob = 0.30
+
+            signal = self.trend_engine.check(
+                up_prob=up_prob,
+                current_price=bar.close,
+                timestamp=timestamp,
+            )
 
         if signal.action == "OPEN_LONG":
             self._stats['mode_b_signals'] += 1

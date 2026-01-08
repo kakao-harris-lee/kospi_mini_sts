@@ -169,6 +169,7 @@ def run_backtest(
             StrategyAdapter,
             RiskConfig,
         )
+        from src.backtest.feature_engineer import add_dl_predictions, add_ensemble_predictions
         from src.strategy import (
             MeanReversionStrategy,
             BreakoutStrategy,
@@ -190,6 +191,32 @@ def run_backtest(
             engineer = FeatureEngineer(FeatureConfig())
             df = engineer.transform(df)
 
+        # DL 예측 추가 (dual_mode 전략용)
+        if strategy == "dual_mode":
+            # Try ensemble first, fall back to single model
+            from pathlib import Path
+            ensemble_dir = Path("models/ensemble")
+            has_ensemble = ensemble_dir.exists() and any(ensemble_dir.glob("model_h*.pth"))
+
+            if has_ensemble:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console,
+                ) as progress:
+                    progress.add_task("Adding ensemble predictions...", total=None)
+                    df = add_ensemble_predictions(df)
+                console.print("[green]Using multi-horizon ensemble[/green]")
+            else:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console,
+                ) as progress:
+                    progress.add_task("Adding DL predictions...", total=None)
+                    df = add_dl_predictions(df)
+                console.print("[yellow]Using single-horizon model (no ensemble found)[/yellow]")
+
         # 전략 인스턴스 생성
         strategy_classes = {
             "mean_reversion": MeanReversionStrategy,
@@ -204,17 +231,19 @@ def run_backtest(
         adapter = StrategyAdapter(strategy_instance)
 
         # 백테스트 설정
+        # Note: For dual_mode, the strategy has its own ATR-based stop management
+        # so we use wider limits here to let the strategy's logic work
         config = BacktestConfig(
             initial_capital=capital,
             position_size=1,
             point_value=50_000,  # KOSPI Mini
             risk_config=RiskConfig(
-                stop_loss_points=1.5,
-                take_profit_points=3.0,
-                time_stop_minutes=30,
-                trailing_stop_points=1.0,
-                max_daily_loss=500_000,
-                max_daily_trades=50,
+                stop_loss_points=20.0,  # Very wide - let strategy manage its own stops
+                take_profit_points=40.0,
+                time_stop_minutes=120,
+                trailing_stop_points=10.0,
+                max_daily_loss=50_000_000,  # Effectively disabled
+                max_daily_trades=200,
             ),
             verbose=verbose,
         )
@@ -269,18 +298,19 @@ def run_backtest(
                 sortino_ratio=getattr(result, 'sortino_ratio', 0.0),
             )
 
-            # 거래 기록 저장
+            # 거래 기록 저장 (handle both Trade and RoundTrip formats)
             if result.trades:
                 trades_data = [
                     {
-                        'entry_time': t.entry_time,
-                        'exit_time': t.exit_time,
+                        # Support both formats: RoundTrip (entry_time) and Trade (timestamp)
+                        'entry_time': getattr(t, 'entry_time', getattr(t, 'timestamp', None)),
+                        'exit_time': getattr(t, 'exit_time', None),
                         'side': t.side.name if hasattr(t.side, 'name') else str(t.side),
-                        'entry_price': t.entry_price,
-                        'exit_price': t.exit_price,
-                        'quantity': t.quantity,
-                        'pnl': t.pnl,
-                        'pnl_amount': getattr(t, 'pnl_amount', t.pnl * config.point_value),
+                        'entry_price': getattr(t, 'entry_price', getattr(t, 'price', 0.0)),
+                        'exit_price': getattr(t, 'exit_price', 0.0),
+                        'quantity': getattr(t, 'quantity', 1),
+                        'pnl': getattr(t, 'pnl', 0.0),
+                        'pnl_amount': getattr(t, 'pnl_amount', t.pnl * config.point_value if t.pnl else 0.0),
                         'commission': getattr(t, 'commission', 0.0),
                         'exit_reason': getattr(t, 'exit_reason', None),
                     }

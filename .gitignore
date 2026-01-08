@@ -29,6 +29,7 @@ logs/
 # Cache
 .token_cache.json
 .kis_token_cache.json
+.kis_token
 *.cache
 
 # OS

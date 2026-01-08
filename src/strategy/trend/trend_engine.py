@@ -66,6 +66,7 @@ class TrendEngine:
         time_cut_atr_threshold: float = 0.5,
         order_size: float = 1.0,
         min_bars_required: int = 60,
+        max_stop_points: float = 2.0,
     ):
         """
         Args:
@@ -78,6 +79,7 @@ class TrendEngine:
             time_cut_atr_threshold: Min favorable move as ATR multiple (default 0.5)
             order_size: Default order size (default 1.0)
             min_bars_required: Minimum bars before trading (default 60)
+            max_stop_points: Maximum stop distance in points (default 2.0 = 100K KRW)
         """
         self.order_size = order_size
         self.min_bars_required = min_bars_required
@@ -95,6 +97,7 @@ class TrendEngine:
             atr_stop_multiplier=atr_stop_multiplier,
             time_cut_minutes=time_cut_minutes,
             time_cut_atr_threshold=time_cut_atr_threshold,
+            max_stop_points=max_stop_points,
         )
 
         # Last known prices for order execution
@@ -247,6 +250,11 @@ class TrendEngine:
         self._stats['total_checks'] += 1
         timestamp = timestamp or time.time()
 
+        # ALWAYS update calibrator with new predictions, even during warm-up
+        # This ensures the calibrator has enough samples when we start trading
+        for horizon, prob in horizon_probs.items():
+            self.ensemble_filter.calibrator.update(horizon, prob)
+
         # Get current technical data
         tech = self.technical.get_current_data()
         if tech is None:
@@ -272,27 +280,35 @@ class TrendEngine:
             if exit_signal.should_exit:
                 return self._create_exit_signal(exit_signal, timestamp, tech)
 
-            # Check for DL-based exit (h10 reversal)
+            # Check for DL-based exit (h10 reversal) using z-scores
+            # Since we enter based on z-scores, we must exit based on z-scores too
             h10 = horizon_probs.get(10, 0.5)
+            z10 = self.ensemble_filter.calibrator.get_zscore(10, h10)
             pos_side = self.position_manager.position_side.value
-            if pos_side == "LONG" and h10 < 0.40:
-                # h10 reversed bearish - exit long
-                exit_signal = ExitSignal(
-                    should_exit=True,
-                    reason=ExitReason.DL_REVERSAL,
-                    exit_price=current_price,
-                    message=f"H10 reversal: {h10:.1%} < 40%",
-                )
-                return self._create_exit_signal(exit_signal, timestamp, tech)
-            elif pos_side == "SHORT" and h10 > 0.60:
-                # h10 reversed bullish - exit short
-                exit_signal = ExitSignal(
-                    should_exit=True,
-                    reason=ExitReason.DL_REVERSAL,
-                    exit_price=current_price,
-                    message=f"H10 reversal: {h10:.1%} > 60%",
-                )
-                return self._create_exit_signal(exit_signal, timestamp, tech)
+
+            # Z-score reversal thresholds (negative z = bearish relative to baseline)
+            zscore_exit_long = -1.0   # Exit LONG when z10 drops significantly
+            zscore_exit_short = 1.0   # Exit SHORT when z10 rises significantly
+
+            if z10 is not None:
+                if pos_side == "LONG" and z10 < zscore_exit_long:
+                    # h10 reversed bearish - exit long
+                    exit_signal = ExitSignal(
+                        should_exit=True,
+                        reason=ExitReason.DL_REVERSAL,
+                        exit_price=current_price,
+                        message=f"H10 reversal: z={z10:.2f} < {zscore_exit_long}",
+                    )
+                    return self._create_exit_signal(exit_signal, timestamp, tech)
+                elif pos_side == "SHORT" and z10 > zscore_exit_short:
+                    # h10 reversed bullish - exit short
+                    exit_signal = ExitSignal(
+                        should_exit=True,
+                        reason=ExitReason.DL_REVERSAL,
+                        exit_price=current_price,
+                        message=f"H10 reversal: z={z10:.2f} > {zscore_exit_short}",
+                    )
+                    return self._create_exit_signal(exit_signal, timestamp, tech)
 
             # Position OK, hold
             return TrendSignal(
@@ -356,7 +372,7 @@ class TrendEngine:
             entry_price = self._last_bid if self._last_bid > 0 else tech.current_price
 
         # Open position in position manager
-        self.position_manager.open_position(
+        position = self.position_manager.open_position(
             side=direction,
             entry_price=entry_price,
             size=self.order_size,
@@ -365,11 +381,23 @@ class TrendEngine:
             timestamp=timestamp,
         )
 
+        # Check if position was opened (could be blocked by cooldown)
+        if position is None:
+            return TrendSignal(
+                timestamp=timestamp,
+                action="HOLD",
+                direction=None,
+                price=tech.current_price,
+                size=0,
+                reason="In cooldown after stop-out",
+                technical_data=tech,
+            )
+
         self._stats['entries'] += 1
 
         logger.info(
             f"MODE_B ENTRY: {direction} @ {entry_price:.2f}, "
-            f"stop={self.position_manager.position.stop_price:.2f}, "
+            f"stop={position.stop_price:.2f}, "
             f"ATR={tech.atr:.2f}"
         )
 
@@ -400,7 +428,7 @@ class TrendEngine:
             exit_price = self._last_ask if self._last_ask > 0 else exit_signal.exit_price
 
         # Close position
-        pnl = self.position_manager.close_position(exit_price, exit_signal.reason)
+        pnl = self.position_manager.close_position(exit_price, exit_signal.reason, timestamp)
 
         self._stats['exits'] += 1
 

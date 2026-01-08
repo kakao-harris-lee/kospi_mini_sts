@@ -58,9 +58,15 @@ class BarData:
     atr: float = 0.0
     hv: float = 0.0  # Historical Volatility
 
-    # LSTM 예측 (옵션)
+    # LSTM 예측 (옵션) - single horizon (legacy)
     up_prob: float = 0.5
     down_prob: float = 0.5
+
+    # Multi-horizon predictions (ensemble)
+    up_prob_h1: float = 0.5   # 1-min horizon
+    up_prob_h3: float = 0.5   # 3-min horizon
+    up_prob_h5: float = 0.5   # 5-min horizon
+    up_prob_h10: float = 0.5  # 10-min horizon
 
     # 변동성 레짐 (None = not yet determined, requires warm-up period)
     regime: Optional[str] = None
@@ -94,6 +100,11 @@ class BarData:
             hv=data.get('hv', 0),
             up_prob=data.get('up_prob', 0.5),
             down_prob=data.get('down_prob', 0.5),
+            # Multi-horizon predictions
+            up_prob_h1=data.get('up_prob_h1', 0.5),
+            up_prob_h3=data.get('up_prob_h3', 0.5),
+            up_prob_h5=data.get('up_prob_h5', 0.5),
+            up_prob_h10=data.get('up_prob_h10', 0.5),
             regime=data.get('regime'),  # None if not provided (warm-up period)
             # Orderbook data for arbitrage
             best_bid=data.get('best_bid', data.get('bid_price_1', 0)),

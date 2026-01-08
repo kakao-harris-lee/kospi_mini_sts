@@ -271,3 +271,305 @@ def prepare_backtest_data(
     """
     engineer = FeatureEngineer(feature_config)
     return engineer.transform(df)
+
+
+def add_dl_predictions(
+    df: pd.DataFrame,
+    model_path: str = "models/trading_lstm.pth",
+    seq_len: int = 60,
+) -> pd.DataFrame:
+    """
+    DL 모델로 up_prob 예측값 추가
+
+    Args:
+        df: OHLCV DataFrame (datetime, open, high, low, close, volume 필수)
+        model_path: 모델 파일 경로
+        seq_len: 시퀀스 길이 (default: 60)
+
+    Returns:
+        up_prob 컬럼이 추가된 DataFrame
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        import torch
+        import torch.nn as nn
+    except ImportError:
+        print("PyTorch not available, using fallback")
+        df['up_prob'] = 0.5
+        return df
+
+    df = df.copy()
+
+    # Load model metadata
+    meta_path = Path(model_path).with_suffix('.json')
+    if not meta_path.exists():
+        print(f"Model metadata not found: {meta_path}")
+        df['up_prob'] = 0.5
+        return df
+
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    # Compute DL features
+    df['returns'] = df['close'].pct_change().fillna(0)
+    df['ma_ratio_5'] = df['close'] / df['close'].rolling(5).mean() - 1
+    df['ma_ratio_10'] = df['close'] / df['close'].rolling(10).mean() - 1
+    df['ma_ratio_20'] = df['close'] / df['close'].rolling(20).mean() - 1
+
+    # RSI
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df['rsi'] = (100 - 100 / (1 + rs)).fillna(50) / 100
+
+    # Bollinger position
+    ma20 = df['close'].rolling(20).mean()
+    std20 = df['close'].rolling(20).std()
+    df['bb_position'] = ((df['close'] - ma20) / (2 * std20)).fillna(0).clip(-1, 1)
+
+    # Volume ratio
+    df['volume_ratio'] = (df['volume'] / df['volume'].rolling(20).mean()).fillna(1).clip(0, 5) / 5
+
+    # Volatility
+    df['volatility'] = df['returns'].rolling(20).std().fillna(0) * 100
+
+    # HL range
+    df['hl_range'] = ((df['high'] - df['low']) / df['close']).fillna(0)
+
+    # Candle body
+    df['candle_body'] = ((df['close'] - df['open']) / (df['high'] - df['low']).replace(0, np.nan)).fillna(0).clip(-1, 1)
+
+    # Fill NaN
+    for col in meta['features']:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+
+    # Load model
+    model_path = Path(model_path)
+    if not model_path.exists():
+        print(f"Model not found: {model_path}")
+        df['up_prob'] = 0.5
+        return df
+
+    # Create model architecture (must match training script TradingCNNLSTM)
+    class TradingCNNLSTM(nn.Module):
+        def __init__(
+            self,
+            input_dim: int,
+            hidden_dim: int = 64,
+            num_layers: int = 2,
+            num_classes: int = 3,
+            dropout: float = 0.2,
+            cnn_channels: tuple = (32, 64),
+            kernel_size: int = 3
+        ):
+            super().__init__()
+            self.input_dim = input_dim
+            self.cnn_channels = cnn_channels
+            self.kernel_size = kernel_size
+
+            # CNN Block
+            self.cnn = nn.Sequential(
+                nn.Conv1d(input_dim, cnn_channels[0], kernel_size=kernel_size, padding=1),
+                nn.BatchNorm1d(cnn_channels[0]),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Conv1d(cnn_channels[0], cnn_channels[1], kernel_size=kernel_size, padding=1),
+                nn.BatchNorm1d(cnn_channels[1]),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.MaxPool1d(kernel_size=2, stride=2)
+            )
+
+            # LSTM
+            self.lstm = nn.LSTM(
+                cnn_channels[1],
+                hidden_dim,
+                num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0,
+                bidirectional=False
+            )
+
+            # Attention
+            self.attention = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.Tanh(),
+                nn.Linear(hidden_dim // 2, 1),
+                nn.Softmax(dim=1)
+            )
+
+            # Classification head
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_dim, 32),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(32, num_classes)
+            )
+
+        def forward(self, x):
+            # x: (batch, seq_len, features)
+            x = x.transpose(1, 2)  # (batch, features, seq_len)
+            x = self.cnn(x)  # (batch, cnn_channels[1], seq_len // 2)
+            x = x.transpose(1, 2)  # (batch, seq_len // 2, cnn_channels[1])
+            lstm_out, _ = self.lstm(x)  # (batch, seq_len // 2, hidden)
+            attn_weights = self.attention(lstm_out)  # (batch, seq_len // 2, 1)
+            context = torch.sum(attn_weights * lstm_out, dim=1)  # (batch, hidden)
+            logits = self.fc(context)
+            return logits
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = TradingCNNLSTM(
+        input_dim=meta['input_dim'],
+        cnn_channels=tuple(meta['cnn_channels']),
+        kernel_size=meta['kernel_size']
+    ).to(device)
+
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    # Prepare sequences and predict
+    features = meta['features']
+    up_probs = []
+
+    with torch.no_grad():
+        for i in range(len(df)):
+            if i < seq_len - 1:
+                up_probs.append(0.5)
+            else:
+                seq_data = df[features].iloc[i-seq_len+1:i+1].values
+                x = torch.tensor(seq_data, dtype=torch.float32).unsqueeze(0).to(device)
+                output = model(x)
+                probs = torch.exp(output).cpu().numpy()[0]
+                up_probs.append(float(probs[1]))  # up probability
+
+    df['up_prob'] = up_probs
+    print(f"DL predictions added: mean up_prob={df['up_prob'].mean():.3f}")
+
+    return df
+
+
+def add_ensemble_predictions(
+    df: pd.DataFrame,
+    model_dir: str = "models/ensemble",
+    seq_len: int = 60,
+) -> pd.DataFrame:
+    """
+    Add multi-horizon ensemble predictions to DataFrame.
+
+    Uses EnsemblePredictor to generate predictions for horizons 1, 3, 5, 10 min.
+
+    Args:
+        df: OHLCV DataFrame (datetime, open, high, low, close, volume)
+        model_dir: Directory containing ensemble models
+        seq_len: Sequence length (default: 60)
+
+    Returns:
+        DataFrame with up_prob_h1, up_prob_h3, up_prob_h5, up_prob_h10 columns
+    """
+    from pathlib import Path
+
+    try:
+        from src.prediction.ensemble_predictor import EnsemblePredictor
+    except ImportError:
+        print("EnsemblePredictor not available, using default 0.5")
+        df['up_prob_h1'] = 0.5
+        df['up_prob_h3'] = 0.5
+        df['up_prob_h5'] = 0.5
+        df['up_prob_h10'] = 0.5
+        return df
+
+    df = df.copy()
+
+    # Check if ensemble models exist
+    model_path = Path(model_dir)
+    if not model_path.exists():
+        print(f"Ensemble directory not found: {model_dir}, using default 0.5")
+        df['up_prob_h1'] = 0.5
+        df['up_prob_h3'] = 0.5
+        df['up_prob_h5'] = 0.5
+        df['up_prob_h10'] = 0.5
+        return df
+
+    # Load ensemble predictor
+    predictor = EnsemblePredictor(model_dir=model_dir)
+    if not predictor.load_models():
+        print("No ensemble models loaded, using default 0.5")
+        df['up_prob_h1'] = 0.5
+        df['up_prob_h3'] = 0.5
+        df['up_prob_h5'] = 0.5
+        df['up_prob_h10'] = 0.5
+        return df
+
+    # Get features from first model metadata
+    first_horizon = list(predictor.metadata.keys())[0]
+    meta = predictor.metadata[first_horizon]
+    features = meta.get('features', [
+        'returns', 'ma_ratio_5', 'ma_ratio_10', 'ma_ratio_20',
+        'rsi', 'bb_position', 'volume_ratio', 'volatility',
+        'hl_range', 'candle_body'
+    ])
+
+    # Compute features if not present
+    if 'returns' not in df.columns:
+        df['returns'] = df['close'].pct_change().fillna(0)
+    if 'ma_ratio_5' not in df.columns:
+        df['ma_ratio_5'] = df['close'] / df['close'].rolling(5).mean() - 1
+    if 'ma_ratio_10' not in df.columns:
+        df['ma_ratio_10'] = df['close'] / df['close'].rolling(10).mean() - 1
+    if 'ma_ratio_20' not in df.columns:
+        df['ma_ratio_20'] = df['close'] / df['close'].rolling(20).mean() - 1
+    if 'rsi' not in df.columns:
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        df['rsi'] = (100 - 100 / (1 + rs)).fillna(50) / 100
+    if 'bb_position' not in df.columns:
+        ma20 = df['close'].rolling(20).mean()
+        std20 = df['close'].rolling(20).std()
+        df['bb_position'] = ((df['close'] - ma20) / (2 * std20)).fillna(0).clip(-1, 1)
+    if 'volume_ratio' not in df.columns:
+        df['volume_ratio'] = (df['volume'] / df['volume'].rolling(20).mean()).fillna(1).clip(0, 5) / 5
+    if 'volatility' not in df.columns:
+        df['volatility'] = df['returns'].rolling(20).std().fillna(0) * 100
+    if 'hl_range' not in df.columns:
+        df['hl_range'] = ((df['high'] - df['low']) / df['close']).fillna(0)
+    if 'candle_body' not in df.columns:
+        df['candle_body'] = ((df['close'] - df['open']) / (df['high'] - df['low']).replace(0, np.nan)).fillna(0).clip(-1, 1)
+
+    # Fill NaN
+    for col in features:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+
+    # Initialize prediction columns
+    horizons = [1, 3, 5, 10]
+    for h in horizons:
+        df[f'up_prob_h{h}'] = 0.5
+
+    # Generate predictions for each bar
+    print(f"Generating ensemble predictions for {len(df)} bars...")
+    for i in range(len(df)):
+        if i < seq_len - 1:
+            continue  # Keep default 0.5
+
+        seq_data = df[features].iloc[i-seq_len+1:i+1].values
+        probs = predictor.predict(seq_data)
+
+        for h in horizons:
+            if h in probs:
+                df.loc[df.index[i], f'up_prob_h{h}'] = probs[h]
+
+    # Summary
+    print(f"Ensemble predictions added:")
+    for h in horizons:
+        col = f'up_prob_h{h}'
+        if col in df.columns:
+            print(f"  h{h}: mean={df[col].mean():.3f}, std={df[col].std():.3f}")
+
+    return df

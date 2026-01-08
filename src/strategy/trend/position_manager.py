@@ -27,6 +27,7 @@ class ExitReason(Enum):
     """Reason for position exit"""
     ATR_STOP = "ATR_STOP"
     TIME_CUT = "TIME_CUT"
+    TAKE_PROFIT = "TAKE_PROFIT"
     MANUAL = "MANUAL"
     SIGNAL = "SIGNAL"
     DL_REVERSAL = "DL_REVERSAL"  # Multi-horizon h10 reversal
@@ -41,6 +42,7 @@ class TrendPosition:
     size: float
     atr_at_entry: float
     stop_price: float         # Current stop level
+    target_price: float       # Take profit target
     highest_price: float      # For long trailing
     lowest_price: float       # For short trailing
     symbol: str = ""
@@ -103,18 +105,28 @@ class TrendPositionManager:
         atr_stop_multiplier: float = 2.0,
         time_cut_minutes: int = 30,
         time_cut_atr_threshold: float = 0.5,
+        stop_cooldown_minutes: int = 15,  # 15 min cooldown after stop-out
+        max_stop_points: float = 2.0,     # Maximum stop distance in points (risk cap)
+        take_profit_multiplier: float = 2.0,  # Take profit at 2x stop distance
     ):
         """
         Args:
             atr_stop_multiplier: ATR multiplier for stop (default 2.0)
             time_cut_minutes: Minutes before time cut check (default 30)
             time_cut_atr_threshold: Min favorable move as ATR multiple (default 0.5)
+            stop_cooldown_minutes: Minutes to wait after stop-out before re-entry (default 10)
+            max_stop_points: Maximum stop distance in points to cap risk (default 2.0)
+            take_profit_multiplier: Take profit at this multiple of stop distance (default 2.0)
         """
         self.atr_stop_multiplier = atr_stop_multiplier
         self.time_cut_minutes = time_cut_minutes
         self.time_cut_atr_threshold = time_cut_atr_threshold
+        self.stop_cooldown_minutes = stop_cooldown_minutes
+        self.max_stop_points = max_stop_points
+        self.take_profit_multiplier = take_profit_multiplier
 
         self._position: Optional[TrendPosition] = None
+        self._last_stop_time: Optional[float] = None  # Track last stop-out time
         self.stats = PositionStats()
 
     @property
@@ -132,6 +144,14 @@ class TrendPositionManager:
         """Get current position side"""
         return self._position.side if self._position else PositionSide.FLAT
 
+    def is_in_cooldown(self, timestamp: Optional[float] = None) -> bool:
+        """Check if still in cooldown period after stop-out"""
+        if self._last_stop_time is None:
+            return False
+        timestamp = timestamp or time.time()
+        cooldown_seconds = self.stop_cooldown_minutes * 60
+        return (timestamp - self._last_stop_time) < cooldown_seconds
+
     def open_position(
         self,
         side: str,
@@ -140,7 +160,7 @@ class TrendPositionManager:
         atr: float,
         symbol: str = "",
         timestamp: Optional[float] = None,
-    ) -> TrendPosition:
+    ) -> Optional[TrendPosition]:
         """
         Open a new position.
 
@@ -153,20 +173,35 @@ class TrendPositionManager:
             timestamp: Entry timestamp (default: now)
 
         Returns:
-            Created TrendPosition
+            Created TrendPosition, or None if in cooldown
         """
+        timestamp = timestamp or time.time()
+
+        # Check cooldown after stop-out
+        if self.is_in_cooldown(timestamp):
+            remaining = self.stop_cooldown_minutes - (timestamp - self._last_stop_time) / 60
+            logger.debug(f"In cooldown, {remaining:.1f} min remaining")
+            return None
+
         if self.has_position:
             logger.warning("Position already exists, closing first")
             self.close_position(entry_price)
-
-        timestamp = timestamp or time.time()
         position_side = PositionSide.LONG if side == "LONG" else PositionSide.SHORT
 
-        # Calculate initial stop
+        # Calculate initial stop with risk cap
+        atr_stop_distance = self.atr_stop_multiplier * atr
+        # Cap stop distance to limit max loss per trade
+        stop_distance = min(atr_stop_distance, self.max_stop_points)
+
+        # Calculate take profit target (multiple of stop distance)
+        target_distance = stop_distance * self.take_profit_multiplier
+
         if position_side == PositionSide.LONG:
-            stop_price = entry_price - self.atr_stop_multiplier * atr
+            stop_price = entry_price - stop_distance
+            target_price = entry_price + target_distance
         else:
-            stop_price = entry_price + self.atr_stop_multiplier * atr
+            stop_price = entry_price + stop_distance
+            target_price = entry_price - target_distance
 
         self._position = TrendPosition(
             side=position_side,
@@ -175,6 +210,7 @@ class TrendPositionManager:
             size=size,
             atr_at_entry=atr,
             stop_price=stop_price,
+            target_price=target_price,
             highest_price=entry_price,
             lowest_price=entry_price,
             symbol=symbol,
@@ -184,7 +220,7 @@ class TrendPositionManager:
 
         logger.info(
             f"Opened {side} position: entry={entry_price:.2f}, "
-            f"stop={stop_price:.2f}, ATR={atr:.2f}"
+            f"stop={stop_price:.2f}, target={target_price:.2f}, ATR={atr:.2f}"
         )
 
         return self._position
@@ -221,7 +257,35 @@ class TrendPositionManager:
         # Update extreme prices and trail stop
         self._update_trailing_stop(current_price, current_atr)
 
-        # Check 1: ATR Stop
+        # Check 0: Take Profit (lock in winners)
+        unrealized_pnl = pos.unrealized_pnl(current_price)
+        if pos.is_long and current_price >= pos.target_price:
+            return ExitSignal(
+                should_exit=True,
+                reason=ExitReason.TAKE_PROFIT,
+                message=f"Take profit: {current_price:.2f} >= target {pos.target_price:.2f}",
+                exit_price=current_price,
+            )
+        if pos.is_short and current_price <= pos.target_price:
+            return ExitSignal(
+                should_exit=True,
+                reason=ExitReason.TAKE_PROFIT,
+                message=f"Take profit: {current_price:.2f} <= target {pos.target_price:.2f}",
+                exit_price=current_price,
+            )
+
+        # Check 1: Hard loss limit (circuit breaker for gaps)
+        unrealized_loss = -unrealized_pnl
+        max_loss = self.max_stop_points * 1.5  # Allow 50% buffer over stop
+        if unrealized_loss > max_loss:
+            return ExitSignal(
+                should_exit=True,
+                reason=ExitReason.ATR_STOP,
+                message=f"Hard loss limit: -{unrealized_loss:.2f} > -{max_loss:.2f}",
+                exit_price=current_price,
+            )
+
+        # Check 2: ATR Stop
         stop_signal = self._check_atr_stop(current_price)
         if stop_signal.should_exit:
             return stop_signal
@@ -241,12 +305,16 @@ class TrendPositionManager:
         """Update trailing stop based on price movement."""
         pos = self._position
 
+        # Apply same max cap to trailing stop distance
+        atr_stop_distance = self.atr_stop_multiplier * current_atr
+        stop_distance = min(atr_stop_distance, self.max_stop_points)
+
         if pos.is_long:
             # Update highest price
             if current_price > pos.highest_price:
                 pos.highest_price = current_price
                 # Trail stop up (never down)
-                new_stop = current_price - self.atr_stop_multiplier * current_atr
+                new_stop = current_price - stop_distance
                 if new_stop > pos.stop_price:
                     old_stop = pos.stop_price
                     pos.stop_price = new_stop
@@ -259,7 +327,7 @@ class TrendPositionManager:
             if current_price < pos.lowest_price:
                 pos.lowest_price = current_price
                 # Trail stop down (never up)
-                new_stop = current_price + self.atr_stop_multiplier * current_atr
+                new_stop = current_price + stop_distance
                 if new_stop < pos.stop_price:
                     old_stop = pos.stop_price
                     pos.stop_price = new_stop
@@ -332,7 +400,7 @@ class TrendPositionManager:
             message="Sufficient movement",
         )
 
-    def close_position(self, exit_price: float, reason: ExitReason = ExitReason.MANUAL) -> float:
+    def close_position(self, exit_price: float, reason: ExitReason = ExitReason.MANUAL, timestamp: Optional[float] = None) -> float:
         """
         Close the current position.
 
@@ -353,10 +421,13 @@ class TrendPositionManager:
         self.stats.total_exits += 1
         self.stats.total_pnl_points += pnl
 
+        exit_time = timestamp or time.time()
         if reason == ExitReason.ATR_STOP:
             self.stats.atr_stop_exits += 1
+            self._last_stop_time = exit_time  # Start cooldown
         elif reason == ExitReason.TIME_CUT:
             self.stats.time_cut_exits += 1
+            self._last_stop_time = exit_time  # Start cooldown
 
         if pnl > 0:
             self.stats.profitable_exits += 1
@@ -408,4 +479,5 @@ class TrendPositionManager:
     def reset(self):
         """Reset position and statistics."""
         self._position = None
+        self._last_stop_time = None
         self.stats = PositionStats()
