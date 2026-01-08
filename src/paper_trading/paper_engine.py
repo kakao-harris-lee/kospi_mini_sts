@@ -277,8 +277,23 @@ class PaperTradingEngine:
                     v = v.decode()
                 return int(float(v)) if v else 0
 
+            def to_datetime(v):
+                if v is None:
+                    return datetime.now()
+                if isinstance(v, datetime):
+                    return v
+                if isinstance(v, bytes):
+                    v = v.decode()
+                if isinstance(v, str):
+                    # Handle ISO format with or without timezone
+                    try:
+                        return datetime.fromisoformat(v.replace('Z', '+00:00'))
+                    except ValueError:
+                        return datetime.now()
+                return datetime.now()
+
             return {
-                'datetime': data.get('timestamp', datetime.now().isoformat()),
+                'datetime': to_datetime(data.get('timestamp')),
                 'code': data.get('code', b'').decode() if isinstance(data.get('code'), bytes) else data.get('code', ''),
                 'open': to_float(data.get('open', data.get('close'))),
                 'high': to_float(data.get('high', data.get('close'))),
