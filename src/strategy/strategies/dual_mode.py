@@ -19,23 +19,18 @@ from enum import Enum
 from ..base import BaseStrategy, Signal, PositionSide, BarData
 from ..trend import TrendEngine
 
-# Telegram notifications
+# Decision logging (replaces simple Telegram)
 try:
-    from src.common.telegram import TelegramNotifier
-    _notifier = TelegramNotifier(check_trading_day=False)  # Always send during trading
-except ImportError:
-    _notifier = None
+    from src.common.decision_logger import DecisionLogger, DecisionLog
+except ImportError as e:
+    logging.getLogger(__name__).error(
+        f"Decision logging unavailable - import failed: {e}. "
+        f"Trading decisions will NOT be logged."
+    )
+    DecisionLogger = None
+    DecisionLog = None
 
 logger = logging.getLogger(__name__)
-
-
-def _send_telegram(message: str) -> None:
-    """Send Telegram notification (non-blocking)."""
-    if _notifier:
-        try:
-            _notifier.send(message)
-        except Exception as e:
-            logger.warning(f"Telegram send failed: {e}")
 
 
 class TradingMode(Enum):
@@ -71,6 +66,11 @@ class DualModeConfig:
 
     # Order size
     order_size: float = 1.0
+
+    # Decision logging
+    enable_decision_logging: bool = True
+    enable_telegram: bool = True
+    enable_clickhouse: bool = True
 
 
 class DualModeStrategy(BaseStrategy):
@@ -119,6 +119,17 @@ class DualModeStrategy(BaseStrategy):
         self._last_mode_notify = 0
         self._mode_notify_cooldown = 60  # seconds
 
+        # Decision logger
+        self._decision_logger: Optional[DecisionLogger] = None
+        if self.config.enable_decision_logging and DecisionLogger:
+            self._decision_logger = DecisionLogger(
+                enable_telegram=self.config.enable_telegram,
+                enable_clickhouse=self.config.enable_clickhouse,
+            )
+
+        # Track current bar for context
+        self._current_bar: Optional[BarData] = None
+
     def _determine_mode(self, bar: BarData) -> TradingMode:
         """Determine trading mode based on current conditions."""
         # Check liquidity (use bid_ask_imbalance as proxy, or spread)
@@ -139,6 +150,7 @@ class DualModeStrategy(BaseStrategy):
     def generate_signal(self, bar: BarData) -> Signal:
         """Generate signal using state machine logic."""
         self._stats['total_bars'] += 1
+        self._current_bar = bar  # Track for decision logging
 
         # ALWAYS update technical indicators and calibrator, regardless of mode
         # This ensures proper warm-up for when we do enter MODE_B
@@ -178,20 +190,19 @@ class DualModeStrategy(BaseStrategy):
             return self._process_mode_b(bar)
 
     def _notify_mode_change(self, prev: TradingMode, curr: TradingMode, bar: BarData) -> None:
-        """Send Telegram notification for mode change."""
-        mode_icons = {
-            TradingMode.AVOID: "⏸️",
-            TradingMode.MODE_A: "🎯",
-            TradingMode.MODE_B: "📈",
-        }
-        msg = (
-            f"{mode_icons.get(curr, '')} <b>Mode Change</b>\n"
-            f"{prev.value} → {curr.value}\n"
-            f"Price: {bar.close:.2f}\n"
-            f"Spread: {bar.spread:.2f}\n"
-            f"OFI Z: {bar.ofi_zscore:.2f}"
-        )
-        _send_telegram(msg)
+        """Log mode change event."""
+        logger.info(f"Mode change: {prev.value} → {curr.value} @ {bar.close:.2f}")
+
+        if self._decision_logger:
+            self._decision_logger.log_mode_change(
+                prev_mode=prev.value,
+                new_mode=curr.value,
+                bar_data={
+                    'close': bar.close,
+                    'spread': bar.spread,
+                    'ofi_zscore': bar.ofi_zscore,
+                }
+            )
 
     def _process_mode_a(self, bar: BarData) -> Signal:
         """Process MODE_A: Arbitrage based on OFI z-score extremes."""
@@ -308,27 +319,94 @@ class DualModeStrategy(BaseStrategy):
         return Signal.HOLD
 
     def _notify_signal(self, action: str, mode: str, bar: BarData, reason: str) -> None:
-        """Send Telegram notification for trading signal."""
-        icon = "🟢" if action == "BUY" else "🔴"
-        msg = (
-            f"{icon} <b>{action} Signal</b> ({mode})\n"
-            f"Price: {bar.close:.2f}\n"
-            f"Reason: {reason}\n"
-            f"Time: {datetime.now().strftime('%H:%M:%S')}"
-        )
-        _send_telegram(msg)
+        """Log trading signal with full context."""
         logger.info(f"Signal: {action} @ {bar.close:.2f} ({mode}) - {reason}")
 
-    def _notify_close(self, bar: BarData, reason: str) -> None:
-        """Send Telegram notification for position close."""
-        msg = (
-            f"🔒 <b>Position Closed</b>\n"
-            f"Price: {bar.close:.2f}\n"
-            f"Reason: {reason}\n"
-            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        if not self._decision_logger or not DecisionLog:
+            return
+
+        # Get technical data
+        tech = self.trend_engine.technical.get_current_data()
+
+        # Get z-scores from calibrator
+        calibrator = self.trend_engine.ensemble_filter.calibrator
+        zscore_h1 = calibrator.get_zscore(1, bar.up_prob_h1) if bar.up_prob_h1 != 0.5 else 0.0
+        zscore_h10 = calibrator.get_zscore(10, bar.up_prob_h10) if bar.up_prob_h10 != 0.5 else 0.0
+
+        decision = DecisionLog(
+            timestamp=bar.datetime or datetime.now(),
+            signal=action,
+            price=bar.close,
+            mode=mode,
+            reason=reason,
+            # DL probabilities
+            up_prob_h1=bar.up_prob_h1,
+            up_prob_h3=bar.up_prob_h3,
+            up_prob_h5=bar.up_prob_h5,
+            up_prob_h10=bar.up_prob_h10,
+            # Z-scores
+            zscore_h1=zscore_h1,
+            zscore_h10=zscore_h10,
+            # Technical indicators
+            ma_fast=tech.ma_fast if tech else 0.0,
+            ma_slow=tech.ma_slow if tech else 0.0,
+            ma_bullish=tech.is_bullish_ma if tech else False,
+            rsi=50.0,  # RSI not implemented in TechnicalCalculator
+            atr=tech.atr if tech else 0.0,
+            cloud_top=tech.cloud_top if tech else 0.0,
+            cloud_bottom=tech.cloud_bottom if tech else 0.0,
+            above_cloud=(tech.current_price > tech.cloud_top) if tech else False,
+            # Market context
+            spread=bar.spread,
+            ofi_zscore=bar.ofi_zscore,
+            regime=bar.regime or "unknown",
         )
-        _send_telegram(msg)
+        self._decision_logger.log_entry(decision)
+
+    def _notify_close(self, bar: BarData, reason: str) -> None:
+        """Log position close with full context."""
         logger.info(f"Close @ {bar.close:.2f} - {reason}")
+
+        if not self._decision_logger or not DecisionLog:
+            return
+
+        # Get technical data
+        tech = self.trend_engine.technical.get_current_data()
+
+        # Get z-scores from calibrator
+        calibrator = self.trend_engine.ensemble_filter.calibrator
+        zscore_h1 = calibrator.get_zscore(1, bar.up_prob_h1) if bar.up_prob_h1 != 0.5 else 0.0
+        zscore_h10 = calibrator.get_zscore(10, bar.up_prob_h10) if bar.up_prob_h10 != 0.5 else 0.0
+
+        decision = DecisionLog(
+            timestamp=bar.datetime or datetime.now(),
+            signal="CLOSE",
+            price=bar.close,
+            mode=self.current_mode.value,
+            reason=reason,
+            # DL probabilities
+            up_prob_h1=bar.up_prob_h1,
+            up_prob_h3=bar.up_prob_h3,
+            up_prob_h5=bar.up_prob_h5,
+            up_prob_h10=bar.up_prob_h10,
+            # Z-scores
+            zscore_h1=zscore_h1,
+            zscore_h10=zscore_h10,
+            # Technical indicators
+            ma_fast=tech.ma_fast if tech else 0.0,
+            ma_slow=tech.ma_slow if tech else 0.0,
+            ma_bullish=tech.is_bullish_ma if tech else False,
+            rsi=50.0,  # RSI not implemented in TechnicalCalculator
+            atr=tech.atr if tech else 0.0,
+            cloud_top=tech.cloud_top if tech else 0.0,
+            cloud_bottom=tech.cloud_bottom if tech else 0.0,
+            above_cloud=(tech.current_price > tech.cloud_top) if tech else False,
+            # Market context
+            spread=bar.spread,
+            ofi_zscore=bar.ofi_zscore,
+            regime=bar.regime or "unknown",
+        )
+        self._decision_logger.log_close(decision)
 
     def get_mode_name(self) -> str:
         """Get current mode name."""
@@ -347,6 +425,11 @@ class DualModeStrategy(BaseStrategy):
             'trend_stats': self.trend_engine.get_stats(),
         }
 
+    def send_daily_summary(self) -> None:
+        """Send daily trading summary via Telegram."""
+        if self._decision_logger:
+            self._decision_logger.send_daily_summary()
+
     def reset(self):
         """Reset strategy state."""
         super().reset()
@@ -356,3 +439,5 @@ class DualModeStrategy(BaseStrategy):
         for key in self._stats:
             if isinstance(self._stats[key], int):
                 self._stats[key] = 0
+        if self._decision_logger:
+            self._decision_logger.reset_daily_stats()

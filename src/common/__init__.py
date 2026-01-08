@@ -33,6 +33,13 @@ from .detailed_logger import (
     disable_detailed_logging,
     DetailedTradingLogger,
 )
+from .decision_logger import (
+    DecisionLogger,
+    DecisionLog,
+    get_decision_logger,
+    log_entry,
+    log_close,
+)
 
 # Architecture improvements (v0.0.3)
 from .circuit_breaker import (
@@ -103,6 +110,12 @@ __all__ = [
     "enable_detailed_logging",
     "disable_detailed_logging",
     "DetailedTradingLogger",
+    # Decision logging
+    "DecisionLogger",
+    "DecisionLog",
+    "get_decision_logger",
+    "log_entry",
+    "log_close",
     # Circuit Breaker
     "CircuitBreaker",
     "CircuitBreakerConfig",
