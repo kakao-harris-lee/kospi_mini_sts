@@ -1,0 +1,42 @@
+{
+  "model_type": "cnn-lstm-classifier",
+  "task": "triple_barrier",
+  "num_classes": 3,
+  "class_names": [
+    "hold",
+    "buy",
+    "sell"
+  ],
+  "input_dim": 13,
+  "seq_len": 60,
+  "atr_period": 20,
+  "barrier_k": 5.0,
+  "max_horizon": 20,
+  "balance_strategy": "both",
+  "features": [
+    "log_return",
+    "ma_ratio_5",
+    "ma_ratio_10",
+    "ma_ratio_20",
+    "rsi_normalized",
+    "bb_position",
+    "volume_ratio",
+    "volatility",
+    "hl_range",
+    "candle_body",
+    "momentum_5",
+    "momentum_10",
+    "atr_normalized"
+  ],
+  "metrics": {
+    "accuracy": 35.28629176687305,
+    "class_accuracy": {
+      "hold": 29.563953488372093,
+      "buy": 45.106934543097864,
+      "sell": 38.24553765781454
+    }
+  },
+  "created_at": "2026-01-09T00:03:43.356176",
+  "train_samples": 52161,
+  "val_samples": 19543
+}
