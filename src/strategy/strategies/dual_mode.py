@@ -44,8 +44,8 @@ class TradingMode(Enum):
 class DualModeConfig:
     """Configuration for Dual Mode Strategy"""
     # Liquidity thresholds
-    liquidity_avoid_threshold: float = 50.0    # Below this = AVOID
-    liquidity_mode_a_threshold: float = 80.0   # Above this = MODE_A eligible
+    liquidity_avoid_threshold: float = 40.0    # Below this = AVOID
+    liquidity_mode_a_threshold: float = 50.0   # Above this = MODE_A eligible
 
     # Basis thresholds for MODE_A
     basis_threshold: float = 1.5  # Z-score threshold for arbitrage (lowered for more signals)
@@ -55,7 +55,7 @@ class DualModeConfig:
     arb_depth_multiplier: float = 3.0
 
     # MODE_B: Trend settings
-    trend_dl_threshold: float = 0.80  # Raised to require stronger conviction
+    trend_dl_threshold: float = 0.60  # Lowered to 0.60~0.65 range
     trend_ma_fast: int = 20
     trend_ma_slow: int = 60
     trend_atr_period: int = 14

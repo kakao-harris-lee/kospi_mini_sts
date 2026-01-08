@@ -77,9 +77,9 @@ class ModelConfig:
 @dataclass
 class StrategyConfig:
     # 모드 A: 스나이퍼 차익거래 (legacy - see ArbitrageConfig for new implementation)
-    mode_a_liquidity_threshold: float = 80.0
+    mode_a_liquidity_threshold: float = 40.0
     mode_a_basis_gap_sigma: float = 2.5
-    mode_a_up_prob_threshold: float = 0.65
+    mode_a_up_prob_threshold: float = 0.60
     mode_a_order_size: float = 5.0
 
     # 모드 B: 딥러닝 추세 매매
@@ -98,7 +98,7 @@ class ArbitrageConfig:
     """MODE_A Sniper Arbitrage Settings (Pure Basis Arbitrage)"""
 
     # Entry Filters
-    max_spread_ticks: int = int(os.getenv("ARBITRAGE_MAX_SPREAD_TICKS", "2"))
+    max_spread_ticks: int = int(os.getenv("ARBITRAGE_MAX_SPREAD_TICKS", "4"))
     depth_multiplier: float = float(os.getenv("ARBITRAGE_DEPTH_MULTIPLIER", "5.0"))
     basis_threshold: float = float(os.getenv("ARBITRAGE_BASIS_THRESHOLD", "2.5"))
 
