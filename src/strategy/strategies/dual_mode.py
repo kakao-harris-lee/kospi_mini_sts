@@ -2,22 +2,40 @@
 Dual Mode Strategy - Combines MODE_A and MODE_B with State Machine
 
 MODE_A: OFI Mean Reversion (extreme z-scores)
-MODE_B: Deep Learning Trend Following (TrendEngine)
+MODE_B: Triple Barrier Classification (CNN-LSTM)
 
 State Machine:
 1. Check liquidity - if below threshold, AVOID
 2. Check basis gap - if extreme, MODE_A (arbitrage opportunity)
-3. Otherwise, MODE_B (trend following with DL)
+3. Otherwise, MODE_B (triple barrier classifier)
 """
 import time
 import logging
+from collections import deque
 from datetime import datetime
-from typing import Dict, Any, Optional
-from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
 from enum import Enum
+
+import pandas as pd
 
 from ..base import BaseStrategy, Signal, PositionSide, BarData
 from ..trend import TrendEngine
+
+# Triple Barrier Predictor
+try:
+    import sys
+    # Add docker-training to path for importing
+    _docker_training_path = Path(__file__).parent.parent.parent.parent / "docker-training" / "scripts"
+    if str(_docker_training_path) not in sys.path:
+        sys.path.insert(0, str(_docker_training_path))
+    from inference_triple_barrier import TripleBarrierPredictor
+    TRIPLE_BARRIER_AVAILABLE = True
+except ImportError as e:
+    logging.getLogger(__name__).warning(f"Triple barrier predictor not available: {e}")
+    TripleBarrierPredictor = None
+    TRIPLE_BARRIER_AVAILABLE = False
 
 # Decision logging (replaces simple Telegram)
 try:
@@ -54,7 +72,12 @@ class DualModeConfig:
     arb_max_spread_ticks: int = 4  # Allow wider spreads
     arb_depth_multiplier: float = 3.0
 
-    # MODE_B: Trend settings
+    # MODE_B: Triple Barrier Classification
+    triple_barrier_model_dir: str = "docker-training/models/triple_barrier"
+    triple_barrier_threshold: float = 0.70  # Confidence threshold for BUY/SELL
+    triple_barrier_buffer_size: int = 100  # Rolling OHLCV buffer size
+
+    # MODE_B: Trend settings (legacy - used as fallback)
     trend_dl_threshold: float = 0.60  # Lowered to 0.60~0.65 range
     trend_ma_fast: int = 20
     trend_ma_slow: int = 60
@@ -79,7 +102,7 @@ class DualModeStrategy(BaseStrategy):
 
     Automatically switches between:
     - MODE_A: Pure Basis Arbitrage (when basis gap is extreme)
-    - MODE_B: Deep Learning Trend Following (normal conditions)
+    - MODE_B: Triple Barrier Classification (CNN-LSTM)
     - AVOID: When liquidity is too low
     """
 
@@ -87,7 +110,23 @@ class DualModeStrategy(BaseStrategy):
         super().__init__(name="DualMode")
         self.config = config or DualModeConfig()
 
-        # Initialize trend engine for MODE_B
+        # Initialize Triple Barrier Predictor for MODE_B
+        self._triple_barrier: Optional[TripleBarrierPredictor] = None
+        if TRIPLE_BARRIER_AVAILABLE:
+            try:
+                self._triple_barrier = TripleBarrierPredictor(
+                    model_dir=self.config.triple_barrier_model_dir,
+                    confidence_threshold=self.config.triple_barrier_threshold,
+                )
+                logger.info(f"Triple barrier predictor loaded (threshold={self.config.triple_barrier_threshold})")
+            except Exception as e:
+                logger.error(f"Failed to load triple barrier predictor: {e}")
+                self._triple_barrier = None
+
+        # Rolling OHLCV buffer for triple barrier predictor
+        self._ohlcv_buffer: deque = deque(maxlen=self.config.triple_barrier_buffer_size)
+
+        # Initialize trend engine for MODE_B (fallback if triple barrier unavailable)
         self.trend_engine = TrendEngine(
             dl_threshold=self.config.trend_dl_threshold,
             ma_fast_period=self.config.trend_ma_fast,
@@ -103,7 +142,7 @@ class DualModeStrategy(BaseStrategy):
         # Current mode
         self.current_mode = TradingMode.AVOID
         self._prev_mode = TradingMode.AVOID  # Track mode changes
-        self.active_engine: Optional[str] = None  # "arb" or "trend"
+        self.active_engine: Optional[str] = None  # "arb" or "triple_barrier"
 
         # Statistics
         self._stats = {
@@ -113,6 +152,7 @@ class DualModeStrategy(BaseStrategy):
             'avoid_bars': 0,
             'mode_a_signals': 0,
             'mode_b_signals': 0,
+            'triple_barrier_signals': 0,
         }
 
         # Last notification time to avoid spam
@@ -238,8 +278,64 @@ class DualModeStrategy(BaseStrategy):
 
         return Signal.HOLD
 
+    def _update_ohlcv_buffer(self, bar: BarData) -> None:
+        """Add bar to OHLCV buffer for triple barrier predictor."""
+        self._ohlcv_buffer.append({
+            'datetime': bar.datetime,
+            'open': bar.open,
+            'high': bar.high,
+            'low': bar.low,
+            'close': bar.close,
+            'volume': bar.volume,
+        })
+
+    def _get_ohlcv_dataframe(self) -> Optional[pd.DataFrame]:
+        """Convert OHLCV buffer to DataFrame for triple barrier predictor."""
+        if len(self._ohlcv_buffer) < 80:  # Need at least 80 rows for features
+            return None
+        return pd.DataFrame(list(self._ohlcv_buffer))
+
     def _process_mode_b(self, bar: BarData) -> Signal:
-        """Process MODE_B: Trend Following with multi-horizon ensemble."""
+        """Process MODE_B: Triple Barrier Classification."""
+        # Update OHLCV buffer
+        self._update_ohlcv_buffer(bar)
+
+        # Try triple barrier predictor first
+        if self._triple_barrier is not None:
+            df = self._get_ohlcv_dataframe()
+            if df is not None:
+                try:
+                    result = self._triple_barrier.generate_signal(df)
+                    signal_str = result["signal"]
+                    confidence = result["confidence"]
+                    probs = result["probabilities"]
+
+                    if signal_str == "BUY":
+                        self._stats['triple_barrier_signals'] += 1
+                        self._stats['mode_b_signals'] += 1
+                        self.active_engine = "triple_barrier"
+                        reason = f"Triple Barrier BUY (conf: {confidence:.1%}, P: {probs['buy']:.1%}/{probs['sell']:.1%}/{probs['hold']:.1%})"
+                        self._notify_signal("BUY", "MODE_B", bar, reason)
+                        return Signal.BUY
+                    elif signal_str == "SELL":
+                        self._stats['triple_barrier_signals'] += 1
+                        self._stats['mode_b_signals'] += 1
+                        self.active_engine = "triple_barrier"
+                        reason = f"Triple Barrier SELL (conf: {confidence:.1%}, P: {probs['buy']:.1%}/{probs['sell']:.1%}/{probs['hold']:.1%})"
+                        self._notify_signal("SELL", "MODE_B", bar, reason)
+                        return Signal.SELL
+                    else:
+                        # HOLD - no action
+                        return Signal.HOLD
+                except Exception as e:
+                    logger.warning(f"Triple barrier prediction failed: {e}")
+                    # Fall through to legacy logic
+
+        # Fallback to legacy trend engine if triple barrier unavailable
+        return self._process_mode_b_legacy(bar)
+
+    def _process_mode_b_legacy(self, bar: BarData) -> Signal:
+        """Fallback MODE_B: Trend Following with multi-horizon ensemble (legacy)."""
         # Technical indicators already updated in generate_signal()
         tech = self.trend_engine.technical.get_current_data()
 
