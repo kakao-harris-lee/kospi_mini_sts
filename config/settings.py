@@ -192,6 +192,46 @@ class TrendConfig:
 
 
 @dataclass
+class MonitoringConfig:
+    """Monitoring & Alerting System Settings (T066)"""
+
+    # Telegram Configuration
+    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    telegram_check_trading_day: bool = os.getenv("TELEGRAM_CHECK_TRADING_DAY", "true").lower() == "true"
+
+    # Health Check Settings
+    health_check_interval: float = float(os.getenv("HEALTH_CHECK_INTERVAL", "15.0"))
+    health_check_timeout_redis: float = float(os.getenv("HEALTH_CHECK_TIMEOUT_REDIS", "2.0"))
+    health_check_timeout_clickhouse: float = float(os.getenv("HEALTH_CHECK_TIMEOUT_CLICKHOUSE", "3.0"))
+    health_check_timeout_kis_api: float = float(os.getenv("HEALTH_CHECK_TIMEOUT_KIS_API", "5.0"))
+
+    # Anomaly Detection Settings
+    anomaly_detection_interval: float = float(os.getenv("ANOMALY_DETECTION_INTERVAL", "10.0"))
+    anomaly_volatility_zscore_threshold: float = float(os.getenv("ANOMALY_VOLATILITY_THRESHOLD", "2.0"))
+    anomaly_signal_frequency_threshold: float = float(os.getenv("ANOMALY_SIGNAL_FREQ_THRESHOLD", "3.0"))
+    anomaly_loss_streak_threshold: int = int(os.getenv("ANOMALY_LOSS_STREAK_THRESHOLD", "5"))
+
+    # Performance Tracking Settings
+    performance_aggregation_interval: float = float(os.getenv("PERFORMANCE_AGGREGATION_INTERVAL", "60.0"))
+    performance_batch_size: int = int(os.getenv("PERFORMANCE_BATCH_SIZE", "100"))
+
+    # Alert Settings
+    alert_retry_delays: str = os.getenv("ALERT_RETRY_DELAYS", "10,30,90")  # Comma-separated seconds
+    alert_max_retries: int = int(os.getenv("ALERT_MAX_RETRIES", "3"))
+    alert_batch_size: int = int(os.getenv("ALERT_BATCH_SIZE", "100"))
+
+    # Loss Thresholds (KRW)
+    loss_warning_threshold: float = float(os.getenv("LOSS_WARNING_THRESHOLD", "-500000"))
+    loss_critical_threshold: float = float(os.getenv("LOSS_CRITICAL_THRESHOLD", "-1000000"))
+
+    @property
+    def retry_delays_list(self) -> list:
+        """Parse retry delays string to list of integers."""
+        return [int(x.strip()) for x in self.alert_retry_delays.split(",")]
+
+
+@dataclass
 class Settings:
     kis: KISConfig = field(default_factory=KISConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
@@ -203,6 +243,7 @@ class Settings:
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
     mock_prediction: MockPredictionConfig = field(default_factory=MockPredictionConfig)  # v0.0.2
     resilience: ResilienceConfig = field(default_factory=ResilienceConfig)  # v0.0.3
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)  # 001-monitoring-alerting
 
     # 로깅 레벨
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
