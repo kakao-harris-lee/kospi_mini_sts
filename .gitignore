@@ -52,3 +52,9 @@ pids/
 # Secrets
 credentials.json
 secrets.json
+
+.claude/
+.specify/
+docker-training/.claude/
+docker-training/.specify/
+specs/

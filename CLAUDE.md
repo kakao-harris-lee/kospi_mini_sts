@@ -181,3 +181,10 @@ All services run via **crontab**, not systemd. The deploy script manages cron re
 | `mean_reversion` | Bollinger Band logic. Good for low volatility. | Active |
 | `breakout` | High/Low breakout. Good for high volatility. | Active |
 | `hybrid` | LSTM + Logic. | *Deprecated* |
+
+## Active Technologies
+- Python 3.11+ + prometheus-client (existing), requests (for Telegram), redis-py, clickhouse-driver, grafana-client (for dashboard provisioning) (001-monitoring-alerting)
+- ClickHouse (performance metrics persistence), Redis (alert queue for retry) (001-monitoring-alerting)
+
+## Recent Changes
+- 001-monitoring-alerting: Added Python 3.11+ + prometheus-client (existing), requests (for Telegram), redis-py, clickhouse-driver, grafana-client (for dashboard provisioning)
