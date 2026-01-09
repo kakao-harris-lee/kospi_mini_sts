@@ -10,8 +10,8 @@
   "input_dim": 13,
   "seq_len": 60,
   "atr_period": 20,
-  "barrier_k": 5.0,
-  "max_horizon": 20,
+  "barrier_k": 1.5,
+  "max_horizon": 30,
   "balance_strategy": "both",
   "features": [
     "log_return",
@@ -29,27 +29,14 @@
     "atr_normalized"
   ],
   "metrics": {
-    "accuracy": 35.28629176687305,
+    "accuracy": 0.5221932114882507,
     "class_accuracy": {
-      "hold": 29.563953488372093,
-      "buy": 45.106934543097864,
-      "sell": 38.24553765781454
+      "hold": 100.0,
+      "buy": 0.0,
+      "sell": 0.0
     }
   },
-  "recommended_params": {
-    "confidence_threshold": 0.7,
-    "stop_loss_ticks": 20,
-    "take_profit_ticks": 30,
-    "backtest_results": {
-      "trades": 22317,
-      "win_rate": 0.4841,
-      "pnl_pts": 2937,
-      "profit_factor": 1.25,
-      "sharpe_ratio": 21.27,
-      "max_drawdown_pts": 114.6
-    }
-  },
-  "created_at": "2026-01-09T00:03:43.356176",
-  "train_samples": 52161,
-  "val_samples": 19543
+  "created_at": "2026-01-09T09:38:31.882947",
+  "train_samples": 1788,
+  "val_samples": 19533
 }

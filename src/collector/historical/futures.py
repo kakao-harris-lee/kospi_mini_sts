@@ -25,6 +25,17 @@ KOSPI_MINI_PREFIX = "105"
 KOSPI200_LEGACY_PREFIX = "A01"
 KOSPI_MINI_LEGACY_PREFIX = "A05"
 
+# KIS "Short codes" - relative position codes (auto-rolling)
+# These codes always refer to the Nth nearest contract
+KIS_SHORT_CODES = {
+    # KOSPI 200 Mini Futures
+    "mini_front": "A05601",   # 근월물 (front month)
+    "mini_back": "A05602",    # 차월물 (next month)
+    # KOSPI 200 Futures (full-size)
+    "kospi_front": "101S6000",  # 근월물 (front month)
+    "kospi_back": "101S6001",   # 차월물 (next month)
+}
+
 # 연도코드 매핑 (표준 형식용)
 YEAR_CODES = {
     2020: 'Q', 2021: 'R', 2022: 'S', 2023: 'T', 2024: 'V',

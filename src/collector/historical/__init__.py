@@ -14,7 +14,12 @@ Historical Data Collection Module
     await collect_today()
 """
 
-from .backfill import backfill, collect_today
+from .backfill import (
+    backfill,
+    collect_today,
+    backfill_kospi200f,
+    collect_today_kospi200f,
+)
 from .futures import (
     get_active_codes_for_date,
     get_all_codes_in_range,
@@ -30,9 +35,12 @@ from .calendar import (
 )
 
 __all__ = [
-    # Backfill functions
+    # Backfill functions (Mini Futures)
     "backfill",
     "collect_today",
+    # Backfill functions (KOSPI 200 Futures full-size)
+    "backfill_kospi200f",
+    "collect_today_kospi200f",
     # Futures utilities
     "get_active_codes_for_date",
     "get_all_codes_in_range",

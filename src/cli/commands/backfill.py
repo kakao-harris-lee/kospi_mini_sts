@@ -33,7 +33,7 @@ def run_backfill(
     ),
 ):
     """과거 데이터 백필 실행"""
-    from src.collector.historical import backfill
+    from src.collector.historical import backfill, backfill_kospi200f, collect_today_kospi200f
 
     console.print(f"\n[bold]과거 {days}일 데이터 백필 시작[/bold]\n")
 
@@ -137,6 +137,52 @@ def show_status():
 
         console.print(code_table)
 
+    except Exception as e:
+        console.print(f"[red]에러:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command("kospi200f")
+def run_kospi200f_backfill(
+    days: int = typer.Option(
+        180,
+        "--days", "-d",
+        help="백필할 일수 (기본: 180일)",
+    ),
+    verbose: bool = typer.Option(
+        True,
+        "--verbose/--quiet",
+        help="상세 출력 여부",
+    ),
+):
+    """KOSPI 200 선물 (풀사이즈) 과거 데이터 백필"""
+    from src.collector.historical import backfill_kospi200f
+
+    console.print(f"\n[bold]KOSPI 200 선물 과거 {days}일 데이터 백필 시작[/bold]\n")
+
+    try:
+        rows = asyncio.run(backfill_kospi200f(days=days, verbose=verbose))
+        console.print(f"\n[green]백필 완료![/green] 총 {rows:,}건 수집")
+    except Exception as e:
+        console.print(f"[red]에러:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command("kospi200f-today")
+def collect_kospi200f_today(
+    verbose: bool = typer.Option(True, "--verbose/--quiet"),
+):
+    """오늘 KOSPI 200 선물 데이터 수집 (장 마감 후)"""
+    from src.collector.historical import collect_today_kospi200f
+
+    console.print("\n[bold]오늘 KOSPI 200 선물 데이터 수집[/bold]\n")
+
+    try:
+        rows = asyncio.run(collect_today_kospi200f(verbose=verbose))
+        if rows > 0:
+            console.print(f"\n[green]수집 완료![/green] {rows:,}건")
+        else:
+            console.print("[yellow]수집된 데이터가 없습니다.[/yellow]")
     except Exception as e:
         console.print(f"[red]에러:[/red] {e}")
         raise typer.Exit(1)

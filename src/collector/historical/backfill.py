@@ -296,13 +296,13 @@ def ensure_database():
     client.close()
 
 
-def ensure_table(client=None):
+def ensure_table(client=None, table_name: str = "kospi_mini_1m"):
     """Create table if not exists."""
     if client is None:
         client = get_db_client()
 
     client.command(f"""
-        CREATE TABLE IF NOT EXISTS {settings.clickhouse.database}.kospi_mini_1m (
+        CREATE TABLE IF NOT EXISTS {settings.clickhouse.database}.{table_name} (
             code String,
             datetime DateTime,
             open Float64,
@@ -315,7 +315,12 @@ def ensure_table(client=None):
     """)
 
 
-def insert_batch(client, rows: List[Tuple]):
+def ensure_kospi200f_table(client=None):
+    """Create KOSPI 200 Futures (full-size) table if not exists."""
+    ensure_table(client, table_name="kospi200f_1m")
+
+
+def insert_batch(client, rows: List[Tuple], table_name: str = "kospi_mini_1m"):
     """Batch insert OHLCV data."""
     if not rows:
         return
@@ -327,7 +332,7 @@ def insert_batch(client, rows: List[Tuple]):
         values.append(f"('{code}', '{dt_str}', {open_}, {high}, {low}, {close}, {volume})")
 
     sql = f"""
-        INSERT INTO kospi_mini_1m (code, datetime, open, high, low, close, volume)
+        INSERT INTO {table_name} (code, datetime, open, high, low, close, volume)
         VALUES {', '.join(values)}
     """
     client.command(sql)
@@ -353,7 +358,8 @@ def get_collected_pairs_in_range(client, start: date, end: date) -> Set[Tuple[st
 async def collect_batch(
     client: httpx.AsyncClient,
     db_client,
-    tasks: List[Tuple[str, date]]
+    tasks: List[Tuple[str, date]],
+    table_name: str = "kospi_mini_1m"
 ) -> int:
     """
     Collect a batch of (code, date) combinations.
@@ -378,8 +384,8 @@ async def collect_batch(
             all_rows.extend(rows)
 
     if all_rows:
-        insert_batch(db_client, all_rows)
-        print(f"Inserted {len(all_rows)} rows from {len(tasks)} tasks")
+        insert_batch(db_client, all_rows, table_name=table_name)
+        print(f"Inserted {len(all_rows)} rows from {len(tasks)} tasks into {table_name}")
 
     return len(all_rows)
 
@@ -408,7 +414,8 @@ async def backfill(days: int = 365, verbose: bool = True):
 
     try:
         collected = get_collected_pairs_in_range(db_client, start, end)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to get collected pairs (proceeding with empty set): {e}")
         collected = set()
 
     total_rows = 0
@@ -469,6 +476,104 @@ async def collect_today(verbose: bool = True):
 
 
 # =============================================================================
+# KOSPI 200 Futures (Full-Size) Backfill
+# =============================================================================
+
+# KOSPI 200 Futures short code (relative position, auto-rolling)
+KOSPI200F_FRONT_CODE = "101S6000"
+
+
+async def backfill_kospi200f(days: int = 365, verbose: bool = True):
+    """
+    Run backfill for KOSPI 200 Futures (full-size) for the past N days.
+
+    Uses the short code 101S6000 which always refers to the front month.
+
+    Args:
+        days: Number of days to backfill
+        verbose: Print progress
+    """
+    if verbose:
+        print("Starting KOSPI 200 Futures backfill...")
+
+    start = date.today() - timedelta(days=max(days, 1))
+    end = date.today()
+    trading_days = get_trading_days_range(start, end)
+
+    if verbose:
+        print(f"Trading days: {len(trading_days)}")
+
+    ensure_database()
+    db_client = get_db_client()
+    ensure_kospi200f_table(db_client)
+
+    # Check what we already have
+    try:
+        result = db_client.query(
+            """
+            SELECT DISTINCT toDate(datetime) as dt
+            FROM kospi200f_1m
+            WHERE dt >= %(start)s AND dt <= %(end)s
+            """,
+            parameters={"start": start, "end": end},
+        )
+        collected_dates = {row[0] for row in result.result_rows}
+    except Exception as e:
+        logger.warning(f"Failed to get collected dates (proceeding with empty set): {e}")
+        collected_dates = set()
+
+    total_rows = 0
+    trading_days_iter = list(reversed(trading_days))
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for idx, day in enumerate(trading_days_iter, start=1):
+            if day in collected_dates:
+                continue
+
+            if verbose:
+                print(f"{idx}/{len(trading_days_iter)} {day}")
+
+            # Use the short code - it always refers to front month
+            tasks = [(KOSPI200F_FRONT_CODE, day)]
+            rows = await collect_batch(client, db_client, tasks, table_name="kospi200f_1m")
+            total_rows += rows
+
+    if verbose:
+        print(f"KOSPI 200 Futures backfill complete. rows={total_rows}")
+
+    return total_rows
+
+
+async def collect_today_kospi200f(verbose: bool = True):
+    """
+    Collect today's KOSPI 200 Futures data (run after market close).
+    """
+    if not is_after_market_close():
+        if verbose:
+            print("Market is still open. Please run after 15:45 KST.")
+        return 0
+
+    today = date.today()
+
+    if verbose:
+        print(f"Collecting KOSPI 200 Futures data for {today}")
+
+    ensure_database()
+    db_client = get_db_client()
+    ensure_kospi200f_table(db_client)
+
+    tasks = [(KOSPI200F_FRONT_CODE, today)]
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        rows = await collect_batch(client, db_client, tasks, table_name="kospi200f_1m")
+
+    if verbose:
+        print(f"Today's KOSPI 200 Futures collection complete. Rows: {rows}")
+
+    return rows
+
+
+# =============================================================================
 # CLI Entry Point
 # =============================================================================
 
@@ -476,17 +581,29 @@ def main():
     """CLI entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="KOSPI Mini Historical Data Backfill")
-    parser.add_argument("--backfill", action="store_true", help="Run backfill")
-    parser.add_argument("--today", action="store_true", help="Collect today's data")
+    parser = argparse.ArgumentParser(description="KOSPI Historical Data Backfill")
+    parser.add_argument("--backfill", action="store_true", help="Run Mini futures backfill")
+    parser.add_argument("--today", action="store_true", help="Collect today's Mini futures data")
+    parser.add_argument("--kospi200f", action="store_true", help="Run KOSPI 200 Futures (full-size) backfill")
+    parser.add_argument("--kospi200f-today", action="store_true", help="Collect today's KOSPI 200 Futures data")
+    parser.add_argument("--all", action="store_true", help="Backfill both Mini and KOSPI 200 Futures")
     parser.add_argument("--days", type=int, default=365, help="Backfill last N days")
 
     args = parser.parse_args()
 
-    if args.backfill:
+    if args.all:
+        print("=== Backfilling Mini Futures ===")
+        asyncio.run(backfill(days=args.days))
+        print("\n=== Backfilling KOSPI 200 Futures ===")
+        asyncio.run(backfill_kospi200f(days=args.days))
+    elif args.backfill:
         asyncio.run(backfill(days=args.days))
     elif args.today:
         asyncio.run(collect_today())
+    elif args.kospi200f:
+        asyncio.run(backfill_kospi200f(days=args.days))
+    elif args.kospi200f_today:
+        asyncio.run(collect_today_kospi200f())
     else:
         parser.print_help()
 
