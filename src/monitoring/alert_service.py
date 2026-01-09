@@ -52,7 +52,8 @@ class AlertService:
 
     MAX_RETRIES = 3
     RETRY_DELAYS = [10, 30, 90]  # seconds
-    BATCH_SIZE = 100  # For ClickHouse audit logging
+    BATCH_SIZE = 1000  # For ClickHouse audit logging (Constitution III: minimum 1000)
+    MAX_BUFFER_SIZE = 10000  # Maximum buffer size to prevent unbounded growth
 
     def __init__(
         self,
@@ -369,9 +370,18 @@ class AlertService:
 
         except Exception as e:
             logger.error(f"Failed to flush alerts to ClickHouse: {e}")
-            # Re-add to buffer for retry
+            # Re-add to buffer for retry, but respect MAX_BUFFER_SIZE to prevent unbounded growth
             async with self._audit_lock:
-                self._audit_buffer.extend(alerts_to_flush)
+                if len(self._audit_buffer) + len(alerts_to_flush) <= self.MAX_BUFFER_SIZE:
+                    self._audit_buffer.extend(alerts_to_flush)
+                else:
+                    # Buffer would exceed limit - discard oldest entries
+                    available_space = self.MAX_BUFFER_SIZE - len(self._audit_buffer)
+                    if available_space > 0:
+                        self._audit_buffer.extend(alerts_to_flush[-available_space:])
+                    logger.warning(
+                        f"Discarded {len(alerts_to_flush) - available_space} alerts due to buffer limit"
+                    )
 
     async def get_queue_size(self) -> int:
         """Get number of pending alerts."""

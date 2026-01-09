@@ -57,8 +57,11 @@ class PerformanceTracker:
     # Aggregation interval (seconds)
     AGGREGATION_INTERVAL = 60.0
 
-    # Batch size for ClickHouse
-    BATCH_SIZE = 100
+    # Batch size for ClickHouse (Constitution III: minimum 1000 records)
+    BATCH_SIZE = 1000
+
+    # Maximum buffer size to prevent unbounded growth on ClickHouse failures
+    MAX_BUFFER_SIZE = 10000
 
     # Rolling window size for Sharpe calculation (number of trades)
     SHARPE_WINDOW = 20
@@ -237,15 +240,19 @@ class PerformanceTracker:
 
         return avg_win, avg_loss
 
+    # Maximum profit factor value (cap to avoid infinity)
+    MAX_PROFIT_FACTOR = 999.99
+
     def _calculate_profit_factor(self, trades: List[TradeExecution]) -> float:
         """Calculate profit factor (gross profit / gross loss)."""
         gross_profit = sum(t.realized_pnl for t in trades if t.realized_pnl > 0)
         gross_loss = abs(sum(t.realized_pnl for t in trades if t.realized_pnl < 0))
 
         if gross_loss == 0:
-            return float('inf') if gross_profit > 0 else 0.0
+            # Cap at MAX_PROFIT_FACTOR to avoid infinity issues in Prometheus
+            return self.MAX_PROFIT_FACTOR if gross_profit > 0 else 0.0
 
-        return gross_profit / gross_loss
+        return min(gross_profit / gross_loss, self.MAX_PROFIT_FACTOR)
 
     def _calculate_max_drawdown(self, trades: List[TradeExecution], strategy: str) -> float:
         """Calculate maximum drawdown from peak equity."""
@@ -383,9 +390,18 @@ class PerformanceTracker:
 
         except Exception as e:
             logger.error(f"Failed to flush performance metrics to ClickHouse: {e}")
-            # Re-add to buffer for retry
+            # Re-add to buffer for retry, but respect MAX_BUFFER_SIZE to prevent unbounded growth
             async with self._batch_lock:
-                self._batch_buffer.extend(metrics_to_flush)
+                if len(self._batch_buffer) + len(metrics_to_flush) <= self.MAX_BUFFER_SIZE:
+                    self._batch_buffer.extend(metrics_to_flush)
+                else:
+                    # Buffer would exceed limit - discard oldest entries
+                    available_space = self.MAX_BUFFER_SIZE - len(self._batch_buffer)
+                    if available_space > 0:
+                        self._batch_buffer.extend(metrics_to_flush[-available_space:])
+                    logger.warning(
+                        f"Discarded {len(metrics_to_flush) - available_space} metrics due to buffer limit"
+                    )
 
     async def get_current_metrics(self, strategy: str, symbol: str) -> Optional[PerformanceMetric]:
         """Get current performance metrics for a strategy/symbol pair."""

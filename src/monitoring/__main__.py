@@ -15,6 +15,8 @@ from datetime import datetime
 
 import typer
 
+from config.settings import settings
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -27,27 +29,30 @@ app = typer.Typer(
     help="KOSPI Mini Trading System - Monitoring & Alerting Service",
 )
 
+# Get monitoring config from settings
+monitoring_config = settings.monitoring
+
 
 @app.command()
 def run(
     redis_url: str = typer.Option(
-        "redis://localhost:6379",
+        f"redis://{settings.redis.host}:{settings.redis.port}",
         help="Redis connection URL",
     ),
     clickhouse_host: str = typer.Option(
-        "localhost",
+        settings.clickhouse.host,
         help="ClickHouse host",
     ),
     clickhouse_port: int = typer.Option(
-        8123,
+        settings.clickhouse.port,
         help="ClickHouse HTTP port",
     ),
     health_interval: float = typer.Option(
-        15.0,
+        monitoring_config.health_check_interval,
         help="Health check interval in seconds",
     ),
     anomaly_interval: float = typer.Option(
-        10.0,
+        monitoring_config.anomaly_detection_interval,
         help="Anomaly detection interval in seconds",
     ),
 ):
@@ -102,10 +107,11 @@ async def _run_service(
     except Exception as e:
         logger.warning(f"Failed to connect to ClickHouse: {e}")
 
-    # Initialize services
+    # Initialize services with config
     alert_service = AlertService(
         redis_client=redis_client,
         clickhouse_client=clickhouse_client,
+        check_trading_day=monitoring_config.telegram_check_trading_day,
     )
 
     health_checker = HealthChecker(
@@ -189,7 +195,12 @@ def test_alert(
     """Send a test alert via Telegram."""
     from src.common.telegram import TelegramNotifier
 
-    notifier = TelegramNotifier(check_trading_day=False)
+    # Use bot token from config if available
+    notifier = TelegramNotifier(
+        bot_token=monitoring_config.telegram_bot_token or None,
+        chat_id=monitoring_config.telegram_chat_id or None,
+        check_trading_day=False,  # Always send test alerts
+    )
     success = notifier.send(f"<b>Test Alert</b>\n\n{message}")
 
     if success:
@@ -210,7 +221,8 @@ async def _show_status():
     import redis.asyncio as aioredis
 
     try:
-        redis_client = aioredis.from_url("redis://localhost:6379", decode_responses=True)
+        redis_url = f"redis://{settings.redis.host}:{settings.redis.port}"
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
 
         # Check pending alerts
         pending = await redis_client.llen("alerts:pending")
