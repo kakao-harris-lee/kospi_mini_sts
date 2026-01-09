@@ -81,3 +81,91 @@ groups:
         annotations:
           summary: "ClickHouse insert errors detected"
           description: "Table {{ $labels.table }} is experiencing insert errors."
+
+  # =========================================================================
+  # Monitoring & Alerting System Rules (001-monitoring-alerting)
+  # =========================================================================
+  - name: monitoring_alerts
+    rules:
+      # Health Check Alerts
+      - alert: ServiceDown
+        expr: health_check_status == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.service }} is down"
+          description: "Service {{ $labels.service }} has been down for more than 1 minute"
+
+      - alert: ServiceDegraded
+        expr: health_check_status == 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service {{ $labels.service }} is degraded"
+          description: "Service {{ $labels.service }} has been degraded for more than 5 minutes"
+
+      # Anomaly Detection Alerts
+      - alert: HighPriceVolatility
+        expr: abs(price_volatility_zscore) > 2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High price volatility detected for {{ $labels.symbol }}"
+          description: "Z-score: {{ $value }}"
+
+      - alert: AbnormalSignalFrequency
+        expr: signal_frequency_ratio > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Abnormal signal frequency for {{ $labels.strategy }}"
+          description: "Signal frequency is {{ $value }}x normal"
+
+      - alert: LossStreak
+        expr: loss_streak_count > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loss streak detected for {{ $labels.strategy }}"
+          description: "{{ $value }} consecutive losses"
+
+      # Alert Delivery Alerts
+      - alert: AlertQueueBacklog
+        expr: alerts_pending > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alert queue backlog"
+          description: "{{ $value }} alerts pending in queue"
+
+      - alert: HighAlertFailureRate
+        expr: rate(alerts_sent_total{status="failed"}[5m]) > 0.1
+        labels:
+          severity: warning
+        annotations:
+          summary: "High alert failure rate"
+          description: "Alert delivery failure rate is high"
+
+      # Performance Alerts
+      - alert: HighDrawdown
+        expr: strategy_max_drawdown > 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High drawdown for {{ $labels.strategy }}"
+          description: "Max drawdown is {{ $value | humanizePercentage }}"
+
+      - alert: CriticalDrawdown
+        expr: strategy_max_drawdown > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical drawdown for {{ $labels.strategy }}"
+          description: "Max drawdown is {{ $value | humanizePercentage }} - Consider stopping strategy"

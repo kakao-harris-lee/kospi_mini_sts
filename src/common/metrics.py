@@ -204,6 +204,140 @@ COMPONENT_RESTARTS = Counter(
     registry=REGISTRY,
 )
 
+# -----------------------------------------------------------------------------
+# Monitoring & Alerting 메트릭 (T008-T011)
+# -----------------------------------------------------------------------------
+
+# T008: Alert metrics
+ALERTS_SENT = Counter(
+    "alerts_sent_total",
+    "Total alerts sent",
+    ["alert_type", "channel", "status"],
+    registry=REGISTRY,
+)
+
+ALERTS_PENDING = Gauge(
+    "alerts_pending",
+    "Current pending alerts in queue",
+    registry=REGISTRY,
+)
+
+ALERTS_RETRY = Counter(
+    "alerts_retry_total",
+    "Total alert retries",
+    ["alert_type"],
+    registry=REGISTRY,
+)
+
+ALERT_DELIVERY_LATENCY = Histogram(
+    "alert_delivery_latency_seconds",
+    "Alert delivery latency",
+    ["channel"],
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0),
+    registry=REGISTRY,
+)
+
+# T009: Health check metrics
+HEALTH_CHECK_STATUS = Gauge(
+    "health_check_status",
+    "Service health status (1=healthy, 0.5=degraded, 0=down)",
+    ["service"],
+    registry=REGISTRY,
+)
+
+HEALTH_CHECK_LATENCY = Gauge(
+    "health_check_latency_seconds",
+    "Last health check latency",
+    ["service"],
+    registry=REGISTRY,
+)
+
+HEALTH_CHECK_FAILURES = Counter(
+    "health_check_failures_total",
+    "Total health check failures",
+    ["service"],
+    registry=REGISTRY,
+)
+
+HEALTH_CHECK_RUNS = Counter(
+    "health_check_runs_total",
+    "Total health checks executed",
+    ["service"],
+    registry=REGISTRY,
+)
+
+# T010: Anomaly detection metrics
+ANOMALIES_DETECTED = Counter(
+    "anomalies_detected_total",
+    "Total anomalies detected",
+    ["anomaly_type", "severity"],
+    registry=REGISTRY,
+)
+
+ANOMALY_DETECTOR_STATE = Gauge(
+    "anomaly_detector_state",
+    "Detector state (1=active, 0=inactive)",
+    ["detector_type"],
+    registry=REGISTRY,
+)
+
+PRICE_VOLATILITY_ZSCORE = Gauge(
+    "price_volatility_zscore",
+    "Current price volatility Z-score",
+    ["symbol"],
+    registry=REGISTRY,
+)
+
+SIGNAL_FREQUENCY_RATIO = Gauge(
+    "signal_frequency_ratio",
+    "Current signal frequency vs average",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+LOSS_STREAK_COUNT = Gauge(
+    "loss_streak_count",
+    "Current consecutive loss count",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+# T011: Performance metrics
+STRATEGY_TOTAL_PNL = Gauge(
+    "strategy_total_pnl",
+    "Total P&L",
+    ["strategy", "symbol"],
+    registry=REGISTRY,
+)
+
+STRATEGY_WIN_RATE = Gauge(
+    "strategy_win_rate",
+    "Current win rate (0-1)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+STRATEGY_SHARPE_RATIO = Gauge(
+    "strategy_sharpe_ratio",
+    "Current Sharpe ratio",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+STRATEGY_MAX_DRAWDOWN = Gauge(
+    "strategy_max_drawdown",
+    "Maximum drawdown",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+STRATEGY_TRADE_COUNT_TODAY = Gauge(
+    "strategy_trade_count_today",
+    "Trades executed today",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
 
 # =============================================================================
 # 메트릭 헬퍼 클래스
@@ -363,6 +497,86 @@ class TradingMetrics:
     def record_restart(self, component: str):
         """컴포넌트 재시작 기록"""
         COMPONENT_RESTARTS.labels(component=component).inc()
+
+    # -------------------------------------------------------------------------
+    # Monitoring & Alerting 메트릭 메서드 (T008-T011)
+    # -------------------------------------------------------------------------
+
+    # T008: Alert metrics
+    def record_alert_sent(self, alert_type: str, channel: str, status: str):
+        """Record alert sent"""
+        ALERTS_SENT.labels(alert_type=alert_type, channel=channel, status=status).inc()
+
+    def set_alerts_pending(self, count: int):
+        """Set pending alerts count"""
+        ALERTS_PENDING.set(count)
+
+    def record_alert_retry(self, alert_type: str):
+        """Record alert retry"""
+        ALERTS_RETRY.labels(alert_type=alert_type).inc()
+
+    def observe_alert_delivery_latency(self, channel: str, latency: float):
+        """Observe alert delivery latency"""
+        ALERT_DELIVERY_LATENCY.labels(channel=channel).observe(latency)
+
+    # T009: Health check metrics
+    def set_health_check_status(self, service: str, status: float):
+        """Set health check status (1=healthy, 0.5=degraded, 0=down)"""
+        HEALTH_CHECK_STATUS.labels(service=service).set(status)
+
+    def set_health_check_latency(self, service: str, latency: float):
+        """Set health check latency"""
+        HEALTH_CHECK_LATENCY.labels(service=service).set(latency)
+
+    def record_health_check_failure(self, service: str):
+        """Record health check failure"""
+        HEALTH_CHECK_FAILURES.labels(service=service).inc()
+
+    def record_health_check_run(self, service: str):
+        """Record health check run"""
+        HEALTH_CHECK_RUNS.labels(service=service).inc()
+
+    # T010: Anomaly detection metrics
+    def record_anomaly_detected(self, anomaly_type: str, severity: str):
+        """Record anomaly detected"""
+        ANOMALIES_DETECTED.labels(anomaly_type=anomaly_type, severity=severity).inc()
+
+    def set_anomaly_detector_state(self, detector_type: str, active: bool):
+        """Set anomaly detector state"""
+        ANOMALY_DETECTOR_STATE.labels(detector_type=detector_type).set(1 if active else 0)
+
+    def set_price_volatility_zscore(self, symbol: str, zscore: float):
+        """Set price volatility Z-score"""
+        PRICE_VOLATILITY_ZSCORE.labels(symbol=symbol).set(zscore)
+
+    def set_signal_frequency_ratio(self, strategy: str, ratio: float):
+        """Set signal frequency ratio"""
+        SIGNAL_FREQUENCY_RATIO.labels(strategy=strategy).set(ratio)
+
+    def set_loss_streak_count(self, strategy: str, count: int):
+        """Set loss streak count"""
+        LOSS_STREAK_COUNT.labels(strategy=strategy).set(count)
+
+    # T011: Performance metrics
+    def set_strategy_total_pnl(self, strategy: str, symbol: str, pnl: float):
+        """Set strategy total P&L"""
+        STRATEGY_TOTAL_PNL.labels(strategy=strategy, symbol=symbol).set(pnl)
+
+    def set_strategy_win_rate(self, strategy: str, win_rate: float):
+        """Set strategy win rate (0-1)"""
+        STRATEGY_WIN_RATE.labels(strategy=strategy).set(win_rate)
+
+    def set_strategy_sharpe_ratio(self, strategy: str, sharpe: float):
+        """Set strategy Sharpe ratio"""
+        STRATEGY_SHARPE_RATIO.labels(strategy=strategy).set(sharpe)
+
+    def set_strategy_max_drawdown(self, strategy: str, drawdown: float):
+        """Set strategy max drawdown"""
+        STRATEGY_MAX_DRAWDOWN.labels(strategy=strategy).set(drawdown)
+
+    def set_strategy_trade_count_today(self, strategy: str, count: int):
+        """Set strategy trade count today"""
+        STRATEGY_TRADE_COUNT_TODAY.labels(strategy=strategy).set(count)
 
 
 # 전역 메트릭 인스턴스
