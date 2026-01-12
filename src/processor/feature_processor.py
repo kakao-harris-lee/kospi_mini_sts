@@ -423,7 +423,8 @@ class FeatureProcessor(StreamConsumer):
     """
 
     # 기본 워밍업 심볼 (근월물 코드)
-    DEFAULT_WARMUP_SYMBOLS = ["A05601", "A05602"]
+    # Mini (A056xx) + Full-size KOSPI 200 (101S600x)
+    DEFAULT_WARMUP_SYMBOLS = ["A05601", "A05602", "101S6000", "101S6001"]
 
     def __init__(self, warmup_symbols: list = None):
         super().__init__(

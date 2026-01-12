@@ -25,10 +25,10 @@ from threading import Thread
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from config.settings import settings
-from src.common import setup_logging, init_metrics, get_metrics
+from src.common import setup_logging, init_metrics, get_metrics, ClickHouseClient
 from src.collector.kis_websocket import KISWebSocketAdapter, KISConfig, KISMarket
 from src.collector.data_collector import TickData
-from src.common.futures_code import get_front_month_code, get_kis_code
+from src.common.futures_code import get_front_month_code, get_kis_code, get_kospi200f_code, get_table_for_symbol
 
 logger = setup_logging("tick_collector")
 
@@ -41,14 +41,36 @@ class TickCollectorConfig:
     trade_batch_size: int = 500
     flush_interval_sec: float = 1.0
     publish_to_redis: bool = True  # Redis Stream에도 발행 여부
+    persist_candles: bool = True   # ClickHouse에 1분봉 저장 여부
+
+
+@dataclass
+class CandleState:
+    """심볼별 캔들 상태"""
+    open_price: Optional[float] = None
+    high_price: float = 0.0
+    low_price: float = float('inf')
+    close_price: float = 0.0
+    volume: int = 0
+    tick_count: int = 0
+    candle_start_minute: Optional[int] = None
+
+    def reset(self):
+        self.open_price = None
+        self.high_price = 0.0
+        self.low_price = float('inf')
+        self.close_price = 0.0
+        self.volume = 0
+        self.tick_count = 0
+        self.candle_start_minute = None
 
 
 class TickDataCollector:
     """
-    틱/호가 데이터 수집기 (v0.0.2 - Lightened)
+    틱/호가 데이터 수집기 (v0.0.3 - Candle Persistence)
 
     WebSocket → Redis Stream (fire-and-forget)
-    ClickHouse 저장은 별도 RawDataLogger가 담당
+    실시간 1분봉 → ClickHouse (kospi_mini_1m / kospi200f_1m)
     """
 
     def __init__(self, config: TickCollectorConfig, kis_config: KISConfig):
@@ -62,12 +84,46 @@ class TickDataCollector:
             maxlen=settings.redis.stream_maxlen
         )
 
+        # ClickHouse client for candle persistence
+        self._db_client = None
+        if config.persist_candles:
+            self._db_client = ClickHouseClient.get_client()
+            self._ensure_tables()
+
+        # 심볼별 캔들 상태
+        self._candle_states: Dict[str, CandleState] = {s: CandleState() for s in config.symbols}
+
         # 통계
         self._orderbook_count = 0
         self._trade_count = 0
+        self._candle_count = 0
         self._last_report = time.time()
         self._running = False
         self._last_orderbook: Dict[str, TickData] = {}  # 심볼별 마지막 호가
+
+    def _ensure_tables(self):
+        """ClickHouse 테이블 생성 확인"""
+        if not self._db_client:
+            return
+
+        for symbol in self.config.symbols:
+            table_name = get_table_for_symbol(symbol)
+            try:
+                self._db_client.command(f"""
+                    CREATE TABLE IF NOT EXISTS {settings.clickhouse.database}.{table_name} (
+                        code String,
+                        datetime DateTime,
+                        open Float64,
+                        high Float64,
+                        low Float64,
+                        close Float64,
+                        volume UInt64
+                    ) ENGINE = ReplacingMergeTree()
+                    ORDER BY (code, datetime)
+                """)
+                logger.info(f"Ensured table: {table_name}")
+            except Exception as e:
+                logger.error(f"Failed to ensure table {table_name}: {e}")
 
     def _on_orderbook(self, tick: TickData):
         """
@@ -90,7 +146,7 @@ class TickDataCollector:
 
     def _on_trade(self, tick: TickData):
         """
-        체결 데이터 수신 콜백 → Redis 발행 + 메트릭 기록
+        체결 데이터 수신 콜백 → Redis 발행 + 캔들 집계 + 메트릭 기록
         OHLC 데이터 (current_price, open_price, high_price, low_price) 포함
         """
         try:
@@ -117,8 +173,90 @@ class TickDataCollector:
             # Redis 발행 (OHLC 데이터 포함)
             self._redis_publisher.publish(tick.to_dict())
 
+            # 1분봉 캔들 집계
+            self._update_candle(tick)
+
         except Exception as e:
             logger.error(f"Error processing trade: {e}")
+
+    def _update_candle(self, tick: TickData):
+        """체결 데이터로 1분봉 캔들 업데이트"""
+        if not self.config.persist_candles:
+            return
+
+        symbol = tick.symbol
+        price = tick.current_price or tick.bid_price_1
+        volume = int(tick.tick_volume or 0)
+
+        if not price or price <= 0:
+            return
+
+        # 심볼별 캔들 상태 가져오기
+        if symbol not in self._candle_states:
+            self._candle_states[symbol] = CandleState()
+
+        state = self._candle_states[symbol]
+        now = datetime.now()
+        current_minute = now.hour * 60 + now.minute
+
+        # 새 캔들 시작 또는 분 변경 시 기존 캔들 저장
+        if state.candle_start_minute is not None and state.candle_start_minute != current_minute:
+            self._flush_candle(symbol, state)
+
+        # 새 캔들 시작
+        if state.open_price is None:
+            state.candle_start_minute = current_minute
+            state.open_price = price
+            state.high_price = price
+            state.low_price = price
+
+        # OHLCV 업데이트
+        state.high_price = max(state.high_price, price)
+        state.low_price = min(state.low_price, price)
+        state.close_price = price
+        state.volume += volume
+        state.tick_count += 1
+
+    def _flush_candle(self, symbol: str, state: CandleState):
+        """완성된 1분봉을 ClickHouse에 저장"""
+        if not self._db_client or state.open_price is None:
+            return
+
+        try:
+            # 캔들 시작 시간 계산
+            now = datetime.now()
+            candle_dt = now.replace(
+                hour=state.candle_start_minute // 60,
+                minute=state.candle_start_minute % 60,
+                second=0,
+                microsecond=0
+            )
+
+            table_name = get_table_for_symbol(symbol)
+            dt_str = candle_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            sql = f"""
+                INSERT INTO {settings.clickhouse.database}.{table_name}
+                (code, datetime, open, high, low, close, volume)
+                VALUES
+                ('{symbol}', '{dt_str}', {state.open_price}, {state.high_price},
+                 {state.low_price}, {state.close_price}, {state.volume})
+            """
+
+            self._db_client.command(sql)
+            self._candle_count += 1
+
+            logger.debug(
+                f"Candle saved: {symbol} {candle_dt} "
+                f"O={state.open_price:.2f} H={state.high_price:.2f} "
+                f"L={state.low_price:.2f} C={state.close_price:.2f} V={state.volume}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to save candle for {symbol}: {e}")
+
+        finally:
+            state.reset()
 
     def _on_tick(self, tick: TickData):
         """
@@ -141,13 +279,14 @@ class TickDataCollector:
             logger.info(
                 f"Tick Collector Stats: "
                 f"orderbook={self._orderbook_count}, "
-                f"trades={self._trade_count}"
+                f"trades={self._trade_count}, "
+                f"candles={self._candle_count}"
             )
             self._last_report = now
 
     def start(self):
-        """수집기 시작 (v0.0.2 - Redis only)"""
-        logger.info(f"Starting Tick Collector (lightweight) for symbols: {self.config.symbols}")
+        """수집기 시작 (v0.0.3 - Candle Persistence)"""
+        logger.info(f"Starting Tick Collector for symbols: {self.config.symbols}")
 
         # 메트릭 서버 시작
         init_metrics("tick_collector", port=8080)
@@ -172,9 +311,15 @@ class TickDataCollector:
         self._running = False
         self.adapter.disconnect()
 
+        # 남은 캔들 플러시
+        for symbol, state in self._candle_states.items():
+            if state.open_price is not None:
+                self._flush_candle(symbol, state)
+
         logger.info(
             f"Tick Collector stopped. "
-            f"Total: orderbook={self._orderbook_count}, trades={self._trade_count}"
+            f"Total: orderbook={self._orderbook_count}, "
+            f"trades={self._trade_count}, candles={self._candle_count}"
         )
 
 
@@ -219,14 +364,31 @@ def main():
         logger.error("KIS_APP_KEY and KIS_APP_SECRET must be set")
         sys.exit(1)
 
-    # KIS WebSocket uses short codes (A05601/A05602)
-    # Note: After contract expiry, KIS may take a few days to roll over A05601
-    # A05602 is more reliable as it always points to an active contract
-    futures_code = os.getenv("FUTURES_CODE") or get_kis_code("back")
+    # 수집할 심볼 목록 결정
+    # 환경변수 FUTURES_CODES로 쉼표 구분 코드 지정 가능
+    # 기본값: KOSPI Mini 차월물(A05602) + KOSPI 200 근월물(101S6000)
+    futures_codes_str = os.getenv("FUTURES_CODES", "")
+    if futures_codes_str:
+        symbols = [s.strip() for s in futures_codes_str.split(",") if s.strip()]
+    else:
+        # 단일 코드 지정 (레거시 호환)
+        single_code = os.getenv("FUTURES_CODE")
+        if single_code:
+            symbols = [single_code]
+        else:
+            # 기본값: Mini 차월물(백테스트용) + KOSPI200 근월물(학습용)
+            symbols = [
+                get_kis_code("back"),       # A05602 (Mini, for backtesting)
+                get_kospi200f_code("front") # 101S6000 (Full, for CNN-LSTM training)
+            ]
+
+    # 캔들 저장 여부
+    persist_candles = os.getenv("PERSIST_CANDLES", "true").lower() == "true"
 
     logger.info(f"Tick Collector Configuration:")
-    logger.info(f"  Futures Code: {futures_code}")
+    logger.info(f"  Symbols: {symbols}")
     logger.info(f"  Market: {market_str}")
+    logger.info(f"  Persist Candles: {persist_candles}")
 
     kis_config = KISConfig(
         app_key=app_key,
@@ -235,10 +397,11 @@ def main():
     )
 
     collector_config = TickCollectorConfig(
-        symbols=[futures_code],
+        symbols=symbols,
         orderbook_batch_size=500,
         trade_batch_size=500,
-        publish_to_redis=True
+        publish_to_redis=True,
+        persist_candles=persist_candles
     )
 
     collector = TickDataCollector(collector_config, kis_config)

@@ -24,15 +24,32 @@ MONTH_CODES = {
     7: 'N', 8: 'Q', 9: 'U', 10: 'V', 11: 'X', 12: 'Z'
 }
 
-# 분기물 월 (3, 6, 9, 12월)
-QUARTERLY_MONTHS = [3, 6, 9, 12]
+# 미니선물 결제월 (매월 - 미니선물은 분기물이 아닌 월물)
+# 참고: 일반 KOSPI200 선물은 분기물(3,6,9,12)이지만, 미니선물은 매월 만기
+MONTHLY_CONTRACTS = list(range(1, 13))  # 1~12월 모두
 
-# KIS API 약식 코드
+# KIS API 약식 코드 (KOSPI Mini Futures)
 KIS_CODES = {
     "front": "A05601",  # 근월물
     "back": "A05602",   # 차월물
     "third": "A05603",  # 원월물 1
     "fourth": "A05604", # 원월물 2
+}
+
+# KIS API 약식 코드 (KOSPI 200 Full-Size Futures)
+KOSPI200F_CODES = {
+    "front": "101S6000",  # 근월물 (front month)
+    "back": "101S6001",   # 차월물 (next month)
+}
+
+# Symbol to table mapping
+SYMBOL_TABLE_MAP = {
+    "A05601": "kospi_mini_1m",
+    "A05602": "kospi_mini_1m",
+    "A05603": "kospi_mini_1m",
+    "A05604": "kospi_mini_1m",
+    "101S6000": "kospi200f_1m",
+    "101S6001": "kospi200f_1m",
 }
 
 
@@ -60,10 +77,10 @@ def get_second_thursday(year: int, month: int) -> date:
     return second_thursday
 
 
-def get_quarterly_months_for_year(year: int) -> list:
-    """해당 연도의 분기물 만기 정보 반환"""
+def get_monthly_contracts_for_year(year: int) -> list:
+    """해당 연도의 월물 만기 정보 반환 (미니선물은 매월 만기)"""
     result = []
-    for month in QUARTERLY_MONTHS:
+    for month in MONTHLY_CONTRACTS:
         expiry = get_second_thursday(year, month)
         result.append({
             'year': year,
@@ -72,6 +89,12 @@ def get_quarterly_months_for_year(year: int) -> list:
             'code': f"101{MONTH_CODES[month]}{year % 100:02d}"
         })
     return result
+
+
+# Alias for backward compatibility
+def get_quarterly_months_for_year(year: int) -> list:
+    """Deprecated: Use get_monthly_contracts_for_year instead"""
+    return get_monthly_contracts_for_year(year)
 
 
 def get_front_month_info(as_of: date = None) -> dict:
@@ -86,8 +109,8 @@ def get_front_month_info(as_of: date = None) -> dict:
 
     # 현재 연도와 다음 연도의 분기물 조회
     candidates = []
-    candidates.extend(get_quarterly_months_for_year(as_of.year))
-    candidates.extend(get_quarterly_months_for_year(as_of.year + 1))
+    candidates.extend(get_monthly_contracts_for_year(as_of.year))
+    candidates.extend(get_monthly_contracts_for_year(as_of.year + 1))
 
     # 만기일이 지나지 않은 가장 가까운 월물 찾기
     for info in candidates:
@@ -95,7 +118,7 @@ def get_front_month_info(as_of: date = None) -> dict:
             return info
 
     # 모두 지났으면 다음 연도 첫 분기물
-    return get_quarterly_months_for_year(as_of.year + 1)[0]
+    return get_monthly_contracts_for_year(as_of.year + 1)[0]
 
 
 def get_back_month_info(as_of: date = None) -> dict:
@@ -112,8 +135,8 @@ def get_back_month_info(as_of: date = None) -> dict:
 
     # 현재 연도와 다음 연도의 분기물 조회
     candidates = []
-    candidates.extend(get_quarterly_months_for_year(as_of.year))
-    candidates.extend(get_quarterly_months_for_year(as_of.year + 1))
+    candidates.extend(get_monthly_contracts_for_year(as_of.year))
+    candidates.extend(get_monthly_contracts_for_year(as_of.year + 1))
 
     # 근월물 다음 월물 찾기
     found_front = False
@@ -124,7 +147,7 @@ def get_back_month_info(as_of: date = None) -> dict:
             found_front = True
 
     # 못 찾으면 다음 연도 두 번째 분기물
-    return get_quarterly_months_for_year(as_of.year + 1)[1]
+    return get_monthly_contracts_for_year(as_of.year + 1)[1]
 
 
 def get_front_month_code(as_of: date = None) -> str:
@@ -256,6 +279,26 @@ def format_futures_info() -> str:
     ]
 
     return "\n".join(lines)
+
+
+def get_table_for_symbol(symbol: str) -> str:
+    """
+    심볼에 대응하는 ClickHouse 테이블 이름 반환
+
+    :param symbol: KIS 코드 (예: 'A05601', '101S6000')
+    :return: 테이블 이름 (예: 'kospi_mini_1m', 'kospi200f_1m')
+    """
+    return SYMBOL_TABLE_MAP.get(symbol, "kospi_mini_1m")
+
+
+def get_kospi200f_code(month_type: str = "front") -> str:
+    """
+    KOSPI 200 Futures (Full-Size) KIS API 코드 반환
+
+    :param month_type: "front" (근월물), "back" (차월물)
+    :return: '101S6000' 또는 '101S6001'
+    """
+    return KOSPI200F_CODES.get(month_type, KOSPI200F_CODES["front"])
 
 
 if __name__ == "__main__":
