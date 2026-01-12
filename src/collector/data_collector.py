@@ -45,6 +45,12 @@ class TickData:
     # 추가 정보
     tick_volume: Optional[float] = None
     open_interest: Optional[float] = None  # 미결제약정
+    # 체결 데이터 OHLC (당일 기준)
+    current_price: Optional[float] = None  # 현재가
+    open_price: Optional[float] = None     # 당일 시가
+    high_price: Optional[float] = None     # 당일 고가
+    low_price: Optional[float] = None      # 당일 저가
+    cumulative_volume: Optional[float] = None  # 누적거래량
     
     def to_dict(self) -> Dict[str, Any]:
         """None이 아닌 필드만 딕셔너리로 변환"""

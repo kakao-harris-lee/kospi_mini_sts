@@ -293,7 +293,11 @@ class DualModeStrategy(BaseStrategy):
         """Convert OHLCV buffer to DataFrame for triple barrier predictor."""
         if len(self._ohlcv_buffer) < 80:  # Need at least 80 rows for features
             return None
-        return pd.DataFrame(list(self._ohlcv_buffer))
+        df = pd.DataFrame(list(self._ohlcv_buffer))
+        # Validate price data - close must be positive for log calculations
+        if (df['close'] <= 0).any():
+            return None
+        return df
 
     def _process_mode_b(self, bar: BarData) -> Signal:
         """Process MODE_B: Triple Barrier Classification."""

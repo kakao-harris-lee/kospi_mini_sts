@@ -266,6 +266,10 @@ class PaperTradingEngine:
     def _parse_bar_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """스트림 데이터를 BarData 형식으로 파싱"""
         try:
+            # Helper to get value with both string and bytes keys
+            def get(key: str, default=None):
+                return data.get(key) or data.get(key.encode(), default)
+
             # 문자열 -> 숫자 변환
             def to_float(v):
                 if isinstance(v, bytes):
@@ -289,23 +293,49 @@ class PaperTradingEngine:
                     try:
                         return datetime.fromisoformat(v.replace('Z', '+00:00'))
                     except ValueError:
-                        return datetime.now()
+                        # Try parsing as Unix timestamp
+                        try:
+                            return datetime.fromtimestamp(float(v))
+                        except ValueError:
+                            return datetime.now()
+                if isinstance(v, (int, float)):
+                    return datetime.fromtimestamp(v)
                 return datetime.now()
 
+            # Price fallback chain: close → current_price → mid_price
+            mid_price = to_float(get('mid_price', 0))
+            current_price = to_float(get('current_price', 0))
+            close = to_float(get('close')) or current_price or mid_price
+            spread = to_float(get('spread', 0))
+            half_spread = spread / 2
+
+            # OHLC from 체결 data (day's OHLC) or fallback to close
+            open_price = to_float(get('open')) or to_float(get('open_price')) or close
+            high_price = to_float(get('high')) or to_float(get('high_price')) or close
+            low_price = to_float(get('low')) or to_float(get('low_price')) or close
+
+            # Volume: prefer tick volume, fallback to cumulative
+            volume = to_int(get('volume')) or to_int(get('cumulative_volume', 0))
+
+            code = get('code', b'')
+            if isinstance(code, bytes):
+                code = code.decode()
+
             return {
-                'datetime': to_datetime(data.get('timestamp')),
-                'code': data.get('code', b'').decode() if isinstance(data.get('code'), bytes) else data.get('code', ''),
-                'open': to_float(data.get('open', data.get('close'))),
-                'high': to_float(data.get('high', data.get('close'))),
-                'low': to_float(data.get('low', data.get('close'))),
-                'close': to_float(data.get('close')),
-                'volume': to_int(data.get('volume', 0)),
-                'bid': to_float(data.get('bid', data.get('close'))),
-                'ask': to_float(data.get('ask', data.get('close'))),
+                'datetime': to_datetime(get('timestamp')),
+                'code': code or '',
+                'open': open_price,
+                'high': high_price,
+                'low': low_price,
+                'close': close,
+                'volume': volume,
+                'bid': to_float(get('bid')) or (mid_price - half_spread if mid_price else close),
+                'ask': to_float(get('ask')) or (mid_price + half_spread if mid_price else close),
                 # Feature 데이터 (있는 경우)
-                'ofi': to_float(data.get('ofi', 0)),
-                'imbalance': to_float(data.get('imbalance', 0)),
-                'spread': to_float(data.get('spread', 0)),
+                'ofi': to_float(get('ofi') or get('ofi_cumulative', 0)),
+                'ofi_zscore': to_float(get('ofi_zscore') or get('ofi_z_score', 0)),
+                'imbalance': to_float(get('imbalance', 0)),
+                'spread': spread,
             }
         except Exception as e:
             logger.error(f"Error parsing bar data: {e}")

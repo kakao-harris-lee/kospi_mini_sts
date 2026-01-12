@@ -530,6 +530,18 @@ class FeatureProcessor(StreamConsumer):
                 'ask_qty_total': sum(ask_qtys),
             }
 
+            # 체결 데이터에서 OHLC 추가 (있는 경우)
+            if data.get('current_price'):
+                feature['current_price'] = float(data['current_price'])
+            if data.get('open_price'):
+                feature['open_price'] = float(data['open_price'])
+            if data.get('high_price'):
+                feature['high_price'] = float(data['high_price'])
+            if data.get('low_price'):
+                feature['low_price'] = float(data['low_price'])
+            if data.get('cumulative_volume'):
+                feature['cumulative_volume'] = float(data['cumulative_volume'])
+
             # 상세 로깅: Feature 계산 결과
             trading_logger.log_feature_calculated(
                 symbol=symbol,

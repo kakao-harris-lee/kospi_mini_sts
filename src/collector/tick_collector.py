@@ -90,8 +90,8 @@ class TickDataCollector:
 
     def _on_trade(self, tick: TickData):
         """
-        체결 데이터 수신 콜백 → 메트릭만 기록
-        (체결 데이터는 호가와 함께 Redis로 이미 발행됨)
+        체결 데이터 수신 콜백 → Redis 발행 + 메트릭 기록
+        OHLC 데이터 (current_price, open_price, high_price, low_price) 포함
         """
         try:
             # 매수/매도 추정 (체결가와 호가 비교)
@@ -113,6 +113,9 @@ class TickDataCollector:
             metrics = get_metrics()
             metrics.record_tick(tick.symbol, "trade")
             metrics.record_trade_tick(tick.symbol, side)
+
+            # Redis 발행 (OHLC 데이터 포함)
+            self._redis_publisher.publish(tick.to_dict())
 
         except Exception as e:
             logger.error(f"Error processing trade: {e}")
@@ -216,9 +219,10 @@ def main():
         logger.error("KIS_APP_KEY and KIS_APP_SECRET must be set")
         sys.exit(1)
 
-    # 현재 근월물 코드 (KRX format: 101H26)
-    # KIS WebSocket uses KRX codes, not short codes (A05601)
-    futures_code = os.getenv("FUTURES_CODE") or get_front_month_code()
+    # KIS WebSocket uses short codes (A05601/A05602)
+    # Note: After contract expiry, KIS may take a few days to roll over A05601
+    # A05602 is more reliable as it always points to an active contract
+    futures_code = os.getenv("FUTURES_CODE") or get_kis_code("back")
 
     logger.info(f"Tick Collector Configuration:")
     logger.info(f"  Futures Code: {futures_code}")

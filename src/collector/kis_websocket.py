@@ -160,26 +160,29 @@ class KISWebSocketAdapter(BaseAPIAdapter):
         """
         선물 호가 데이터 파싱
 
-        호가 데이터 형식 (|로 구분):
+        호가 데이터 형식 (^로 구분):
         0: 유가증권단축종목코드
         1: 영업시간
-        2: 시간구분코드
-        3~12: 매도호가1~10
-        13~22: 매수호가1~10
-        23~32: 매도호가잔량1~10
-        33~42: 매수호가잔량1~10
+        2~11: 매도호가1~10
+        12~21: 매수호가1~10
+        22~31: 매도호가잔량1~10
+        32~41: 매수호가잔량1~10
         ... (추가 필드)
         """
         try:
-            fields = data.split('|')
-            if len(fields) < 43:
+            fields = data.split('^')
+            if len(fields) < 22:
+                logger.debug(f"ASK data too short: {len(fields)} fields")
                 return None
 
-            # 호가 데이터 추출
-            ask_prices = [float(fields[i]) if fields[i] else 0 for i in range(3, 8)]   # 매도 1~5
-            bid_prices = [float(fields[i]) if fields[i] else 0 for i in range(13, 18)] # 매수 1~5
-            ask_qtys = [float(fields[i]) if fields[i] else 0 for i in range(23, 28)]   # 매도잔량 1~5
-            bid_qtys = [float(fields[i]) if fields[i] else 0 for i in range(33, 38)]   # 매수잔량 1~5
+            # 호가 데이터 추출 (실시간 WebSocket 형식)
+            # 0: 종목코드, 1: 시간
+            # 2-6: 매도호가 1~5, 7-11: 매수호가 1~5
+            # 12-16: 매도잔량 1~5, 17-21: 매수잔량 1~5
+            ask_prices = [float(fields[i]) if fields[i] else 0 for i in range(2, 7)]   # 매도 1~5
+            bid_prices = [float(fields[i]) if fields[i] else 0 for i in range(7, 12)]  # 매수 1~5
+            ask_qtys = [float(fields[i]) if fields[i] else 0 for i in range(12, 17)]   # 매도잔량 1~5
+            bid_qtys = [float(fields[i]) if fields[i] else 0 for i in range(17, 22)]   # 매수잔량 1~5
 
             tick = TickData(
                 symbol=symbol,
@@ -215,38 +218,49 @@ class KISWebSocketAdapter(BaseAPIAdapter):
         """
         선물 체결 데이터 파싱
 
-        체결 데이터 형식 (|로 구분):
-        0: 유가증권단축종목코드
+        체결 데이터 형식 (^로 구분, 실시간 WebSocket):
+        0: 종목코드
         1: 영업시간
-        2: 현재가
+        2: 전일대비
         3: 전일대비부호
-        4: 전일대비
-        5: 등락률
+        4: 등락률
+        5: 현재가
         6: 시가
         7: 고가
         8: 저가
-        9: 매도호가
-        10: 매수호가
-        11: 체결량
-        12: 누적거래량
-        13: 누적거래대금
-        14: 미결제약정
+        9: 체결량
+        10: 누적거래량
+        11: 누적거래대금
         ... (추가 필드)
         """
         try:
-            fields = data.split('|')
-            if len(fields) < 15:
+            fields = data.split('^')
+            if len(fields) < 12:
                 return None
+
+            # Extract all OHLCV fields
+            current_price = float(fields[5]) if fields[5] else 0
+            open_price = float(fields[6]) if fields[6] else 0
+            high_price = float(fields[7]) if fields[7] else 0
+            low_price = float(fields[8]) if fields[8] else 0
+            tick_vol = float(fields[9]) if fields[9] else 0
+            cumulative_vol = float(fields[10]) if fields[10] else 0
 
             tick = TickData(
                 symbol=symbol,
                 timestamp=time.time(),
-                bid_price_1=float(fields[10]) if fields[10] else 0,  # 매수호가
-                bid_qty_1=0,  # 체결 데이터에는 잔량 없음
-                ask_price_1=float(fields[9]) if fields[9] else 0,   # 매도호가
+                bid_price_1=current_price,  # 현재가를 bid로 사용
+                bid_qty_1=0,
+                ask_price_1=current_price,  # 현재가를 ask로 사용
                 ask_qty_1=0,
-                tick_volume=float(fields[11]) if fields[11] else 0,  # 체결량
-                open_interest=float(fields[14]) if len(fields) > 14 and fields[14] else None  # 미결제약정
+                tick_volume=tick_vol,
+                open_interest=None,
+                # OHLC data from 체결
+                current_price=current_price,
+                open_price=open_price,
+                high_price=high_price,
+                low_price=low_price,
+                cumulative_volume=cumulative_vol,
             )
             return tick
 
@@ -304,15 +318,23 @@ class KISWebSocketAdapter(BaseAPIAdapter):
                 raw_data = self._decrypt_data(raw_data)
 
             # 데이터 파싱
-            # 여러 건의 데이터가 ^로 구분됨
-            data_items = raw_data.split('^') if '^' in raw_data else [raw_data]
+            # 필드는 ^로 구분됨 (예: A05602^111843^678.26^...)
+            # 여러 건일 경우 count > 1이고 데이터가 연속됨
+            # 필드 구분자: ^ (캐럿)
+            fields = raw_data.split('^')
+            if not fields:
+                return
+
+            # 종목코드는 첫 번째 필드
+            symbol = fields[0]
+
+            # 하나의 레코드로 처리 (count는 보통 1)
+            data_items = [raw_data]  # 전체 raw_data를 하나의 레코드로
 
             for item in data_items:
-                # 종목코드 추출 (첫 번째 필드)
-                item_fields = item.split('|')
+                item_fields = item.split('^')
                 if not item_fields:
                     continue
-                symbol = item_fields[0]
 
                 tick = None
                 tick_type = "orderbook"
