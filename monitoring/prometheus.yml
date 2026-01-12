@@ -26,16 +26,13 @@ scrape_configs:
         target_label: instance
         replacement: 'redis'
 
-  # ClickHouse metrics
-  - job_name: 'clickhouse'
-    static_configs:
-      - targets: ['clickhouse:8123']
-    metrics_path: /metrics
+  # NOTE: ClickHouse doesn't expose /metrics natively.
+  # To monitor ClickHouse, add clickhouse_exporter container if needed.
 
-  # Trading Application Metrics
+  # Trading Application Metrics (running on host)
   - job_name: 'tick-collector'
     static_configs:
-      - targets: ['tick-collector:8080']
+      - targets: ['host.docker.internal:8080']
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
@@ -43,7 +40,7 @@ scrape_configs:
 
   - job_name: 'feature-processor'
     static_configs:
-      - targets: ['feature-processor:8081']
+      - targets: ['host.docker.internal:8081']
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
@@ -51,7 +48,7 @@ scrape_configs:
 
   - job_name: 'strategy-manager'
     static_configs:
-      - targets: ['strategy-manager:8082']
+      - targets: ['host.docker.internal:8082']
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance

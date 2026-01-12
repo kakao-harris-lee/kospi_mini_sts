@@ -12,9 +12,9 @@ datasources:
   - name: ClickHouse
     type: grafana-clickhouse-datasource
     access: proxy
-    url: http://clickhouse:8123
+    url: http://host.docker.internal:8123
     jsonData:
-      defaultDatabase: trading_db
+      defaultDatabase: kospi
       port: 8123
       protocol: http
     editable: false
