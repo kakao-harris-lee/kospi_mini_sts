@@ -106,6 +106,8 @@ async def _run_service(
         clickhouse_client = clickhouse_connect.get_client(
             host=clickhouse_host,
             port=clickhouse_port,
+            username=settings.clickhouse.user,
+            password=settings.clickhouse.password,
         )
         clickhouse_client.command("SELECT 1")
         logger.info(f"Connected to ClickHouse: {clickhouse_host}:{clickhouse_port}")
