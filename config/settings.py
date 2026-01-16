@@ -36,7 +36,7 @@ class RedisConfig:
     host: str = os.getenv("REDIS_HOST", "localhost")
     port: int = int(os.getenv("REDIS_PORT", "6379"))
     password: Optional[str] = os.getenv("REDIS_PASSWORD")
-    db: int = int(os.getenv("REDIS_DB", "0"))
+    db: int = int(os.getenv("REDIS_DB", "2"))  # DB2 to isolate from other systems
     decode_responses: bool = True
     
     # Stream 설정

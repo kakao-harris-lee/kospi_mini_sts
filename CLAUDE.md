@@ -8,6 +8,14 @@ KOSPI Mini Futures Trading System.
 **Core Architecture:** Asyncio-based Event-Driven Architecture using Redis Streams.
 **Tech Stack:** Python 3.11+, Redis Streams (Msg Broker), ClickHouse (Data Lake), KIS Open API.
 
+**Always add important documentation here!** When you create or discover:
+- Architecture Diagram → Add Reference Paths Here
+- Database Schema → Add Reference Paths Here
+- Troubleshooting → Add Reference Paths Here
+- Setup Guide → Add Reference Paths Here
+
+This prevents context loss! Update this file immediately when you create important documentation.
+
 ## 2. Architecture & Data Flow
 
 ### Real-time Pipeline
@@ -99,6 +107,7 @@ This project uses **KIS "Short Codes"** which represent relative maturity positi
 
 ### D. Redis Streams
 
+* **Database:** Uses **Redis DB2** (`REDIS_DB=2`) to isolate data from other systems on the same server.
 * **Consumer Groups:** All services must use `XREADGROUP`.
 * **Reliability:** On startup, always process the **PEL (Pending Entry List)** first.
 * **Keys:**
