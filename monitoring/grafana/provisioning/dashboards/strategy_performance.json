@@ -68,7 +68,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -81,7 +83,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_total_pnl{strategy=~\"$strategy\", symbol=~\"$symbol\"}",
+          "expr": "daily_pnl{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -133,7 +135,9 @@
       "options": {
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -147,7 +151,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_win_rate{strategy=~\"$strategy\"} * 100",
+          "expr": "strategy_win_rate{strategy=~\"$strategy\"} * 100 or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -200,7 +204,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -213,7 +219,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_sharpe_ratio{strategy=~\"$strategy\"}",
+          "expr": "strategy_sharpe_ratio{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -265,7 +271,9 @@
       "options": {
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -279,7 +287,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_max_drawdown{strategy=~\"$strategy\"}",
+          "expr": "strategy_max_drawdown{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -324,7 +332,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -337,7 +347,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_trade_count_today{strategy=~\"$strategy\"}",
+          "expr": "sum(orders_executed_total{strategy=~\"$strategy\"}) or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -412,7 +422,11 @@
       "id": 6,
       "options": {
         "legend": {
-          "calcs": ["lastNotNull", "min", "max"],
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -428,7 +442,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_total_pnl{strategy=~\"$strategy\", symbol=~\"$symbol\"}",
+          "expr": "daily_pnl{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}} ({{symbol}})",
           "refId": "A"
         }
@@ -501,7 +515,10 @@
       "id": 7,
       "options": {
         "legend": {
-          "calcs": ["mean", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -517,7 +534,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_max_drawdown{strategy=~\"$strategy\"}",
+          "expr": "strategy_max_drawdown{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -720,7 +737,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true
@@ -732,7 +751,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_total_pnl",
+          "expr": "daily_pnl or vector(0)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -743,7 +762,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_win_rate",
+          "expr": "strategy_win_rate or vector(0)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -754,7 +773,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_sharpe_ratio",
+          "expr": "strategy_sharpe_ratio or vector(0)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -765,7 +784,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_max_drawdown",
+          "expr": "strategy_max_drawdown or vector(0)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -776,7 +795,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "strategy_trade_count_today",
+          "expr": "orders_executed_total or vector(0)",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -900,7 +919,9 @@
       "id": 9,
       "options": {
         "legend": {
-          "calcs": ["sum"],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -916,7 +937,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "increase(anomalies_detected_total[1h])",
+          "expr": "increase(anomalies_detected_total[1h]) or vector(0)",
           "legendFormat": "{{anomaly_type}} ({{severity}})",
           "refId": "A"
         }
@@ -968,7 +989,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -981,7 +1004,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "loss_streak_count{strategy=~\"$strategy\"}",
+          "expr": "loss_streak_count{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -1033,7 +1056,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -1046,7 +1071,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "signal_frequency_ratio{strategy=~\"$strategy\"}",
+          "expr": "signal_frequency_ratio{strategy=~\"$strategy\"} or vector(0)",
           "legendFormat": "{{strategy}}",
           "refId": "A"
         }
@@ -1058,14 +1083,23 @@
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["monitoring", "performance", "strategy", "kospi"],
+  "tags": [
+    "monitoring",
+    "performance",
+    "strategy",
+    "kospi"
+  ],
   "templating": {
     "list": [
       {
         "current": {
           "selected": true,
-          "text": ["All"],
-          "value": ["$__all"]
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
         },
         "datasource": {
           "type": "prometheus",
@@ -1091,8 +1125,12 @@
       {
         "current": {
           "selected": true,
-          "text": ["All"],
-          "value": ["$__all"]
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
         },
         "datasource": {
           "type": "prometheus",

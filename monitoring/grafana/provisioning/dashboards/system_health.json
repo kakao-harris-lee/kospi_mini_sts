@@ -88,7 +88,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -101,7 +103,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"redis\"}",
+          "expr": "health_check_status{service=\"redis\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -173,7 +175,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -186,7 +190,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"clickhouse\"}",
+          "expr": "health_check_status{service=\"clickhouse\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -258,7 +262,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -271,7 +277,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"kis_api\"}",
+          "expr": "health_check_status{service=\"kis_api\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -343,7 +349,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -356,7 +364,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"tick_collector\"}",
+          "expr": "health_check_status{service=\"tick_collector\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -428,7 +436,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -441,7 +451,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"feature_processor\"}",
+          "expr": "health_check_status{service=\"feature_processor\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -513,7 +523,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -526,7 +538,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"prediction_engine\"}",
+          "expr": "health_check_status{service=\"prediction_engine\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -598,7 +610,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -611,7 +625,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"strategy_manager\"}",
+          "expr": "health_check_status{service=\"strategy_manager\"} or vector(0)",
           "refId": "A"
         }
       ],
@@ -681,7 +695,10 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -697,7 +714,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_latency_seconds{service=~\".+\"} * 1000",
+          "expr": "health_check_latency_seconds{service=~\".+\"} * 1000 or vector(0)",
           "legendFormat": "{{service}}",
           "refId": "A"
         }
@@ -768,7 +785,9 @@
       "id": 9,
       "options": {
         "legend": {
-          "calcs": ["sum"],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -784,7 +803,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(alerts_sent_total[5m])",
+          "expr": "rate(alerts_sent_total[5m]) or vector(0)",
           "legendFormat": "{{alert_type}} ({{status}})",
           "refId": "A"
         }
@@ -836,7 +855,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
           "values": false
         },
@@ -849,7 +870,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "alerts_pending",
+          "expr": "alerts_pending or vector(0)",
           "refId": "A"
         }
       ],
@@ -935,7 +956,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(health_check_failures_total[5m])",
+          "expr": "rate(health_check_failures_total[5m]) or vector(0)",
           "legendFormat": "{{service}}",
           "refId": "A"
         }
@@ -947,7 +968,11 @@
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["monitoring", "health", "kospi"],
+  "tags": [
+    "monitoring",
+    "health",
+    "kospi"
+  ],
   "templating": {
     "list": []
   },
