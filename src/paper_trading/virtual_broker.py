@@ -256,6 +256,14 @@ class VirtualBroker:
 
         self.filled_orders.append(order)
 
+        # Prometheus 메트릭 기록
+        self._metrics.record_order(
+            strategy=self.strategy_name,
+            order_type=order.order_type.value,
+            side=order.side.value,
+            status="SUCCESS",
+        )
+
         # 포지션 처리
         self._update_position(order)
 
@@ -359,6 +367,15 @@ class VirtualBroker:
         order.commission = commission
 
         self.filled_orders.append(order)
+
+        # Prometheus 메트릭 기록
+        self._metrics.record_order(
+            strategy=self.strategy_name,
+            order_type=order.order_type.value,
+            side=order.side.value,
+            status="SUCCESS",
+        )
+
         self._update_position(order)
 
         if self.on_fill:
