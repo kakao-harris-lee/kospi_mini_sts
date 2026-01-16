@@ -23,6 +23,7 @@ from src.monitoring.trade_notifier import TradeNotifier
 from src.monitoring.health_checker import HealthChecker
 from src.monitoring.performance_tracker import PerformanceTracker
 from src.monitoring.anomaly_detector import AnomalyDetector
+from src.monitoring.data_tracker import DataCollectionTracker, ModelTrainingTracker
 
 __all__ = [
     # Models
@@ -40,4 +41,6 @@ __all__ = [
     "HealthChecker",
     "PerformanceTracker",
     "AnomalyDetector",
+    "DataCollectionTracker",
+    "ModelTrainingTracker",
 ]

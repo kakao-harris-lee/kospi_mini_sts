@@ -2,12 +2,15 @@
 Dual Mode Strategy - Combines MODE_A and MODE_B with State Machine
 
 MODE_A: OFI Mean Reversion (extreme z-scores)
-MODE_B: Triple Barrier Classification (CNN-LSTM)
+MODE_B: Triple Barrier + TrendEngine (Combined Approach)
+        - Triple Barrier CNN-LSTM for direction signal (BUY/SELL)
+        - TrendEngine for technical confirmation (MA + Ichimoku)
+        - TrendEngine PositionManager for risk management (ATR stops, time cuts)
 
 State Machine:
 1. Check liquidity - if below threshold, AVOID
 2. Check basis gap - if extreme, MODE_A (arbitrage opportunity)
-3. Otherwise, MODE_B (triple barrier classifier)
+3. Otherwise, MODE_B (combined triple barrier + trend engine)
 """
 import time
 import logging
@@ -47,6 +50,14 @@ except ImportError as e:
     )
     DecisionLogger = None
     DecisionLog = None
+
+# Prometheus metrics
+try:
+    from src.common.metrics import get_metrics
+    METRICS_AVAILABLE = True
+except ImportError:
+    get_metrics = None
+    METRICS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +113,10 @@ class DualModeStrategy(BaseStrategy):
 
     Automatically switches between:
     - MODE_A: Pure Basis Arbitrage (when basis gap is extreme)
-    - MODE_B: Triple Barrier Classification (CNN-LSTM)
+    - MODE_B: Combined Triple Barrier + TrendEngine
+        - Triple Barrier (CNN-LSTM) provides direction signal
+        - TrendEngine provides technical confirmation (MA + Ichimoku)
+        - TrendEngine PositionManager handles risk (ATR stops, time cuts)
     - AVOID: When liquidity is too low
     """
 
@@ -142,7 +156,7 @@ class DualModeStrategy(BaseStrategy):
         # Current mode
         self.current_mode = TradingMode.AVOID
         self._prev_mode = TradingMode.AVOID  # Track mode changes
-        self.active_engine: Optional[str] = None  # "arb" or "triple_barrier"
+        self.active_engine: Optional[str] = None  # "arb", "triple_barrier+trend", or "trend"
 
         # Statistics
         self._stats = {
@@ -152,7 +166,8 @@ class DualModeStrategy(BaseStrategy):
             'avoid_bars': 0,
             'mode_a_signals': 0,
             'mode_b_signals': 0,
-            'triple_barrier_signals': 0,
+            'triple_barrier_signals': 0,  # Signals where TB+Trend agreed
+            'trend_fallback_signals': 0,  # Signals from legacy trend engine fallback
         }
 
         # Last notification time to avoid spam
@@ -170,6 +185,14 @@ class DualModeStrategy(BaseStrategy):
         # Track current bar for context
         self._current_bar: Optional[BarData] = None
 
+        # Prometheus metrics
+        self._metrics = get_metrics() if METRICS_AVAILABLE else None
+
+        # Last emitted TB state for metrics
+        self._last_tb_signal: int = 0  # -1=SELL, 0=HOLD, 1=BUY
+        self._last_tb_confidence: float = 0.0
+        self._last_tb_probs: Dict[str, float] = {"buy": 0.0, "sell": 0.0, "hold": 1.0}
+
     def _determine_mode(self, bar: BarData) -> TradingMode:
         """Determine trading mode based on current conditions."""
         # Check liquidity (use bid_ask_imbalance as proxy, or spread)
@@ -186,6 +209,59 @@ class DualModeStrategy(BaseStrategy):
 
         # Default to MODE_B (trend following)
         return TradingMode.MODE_B
+
+    def _emit_mode_metrics(self, bar: BarData) -> None:
+        """Emit current mode and engine state to Prometheus metrics."""
+        if not self._metrics:
+            return
+
+        strategy = "dual_mode"
+
+        # Mode value: AVOID=0, MODE_A=1, MODE_B=2
+        mode_map = {"AVOID": 0, "MODE_A": 1, "MODE_B": 2}
+        mode_val = mode_map.get(self.current_mode.value, 0)
+        self._metrics.set_trading_mode(strategy, mode_val)
+
+        # Active engine indicators
+        engines = ["arb", "triple_barrier", "trend", "none"]
+        for eng in engines:
+            if self.active_engine is None:
+                active = (eng == "none")
+            else:
+                active = (eng in self.active_engine)
+            self._metrics.set_active_engine(strategy, eng, active)
+
+        # Triple Barrier state
+        self._metrics.set_triple_barrier_signal(strategy, self._last_tb_signal)
+        self._metrics.set_triple_barrier_confidence(strategy, self._last_tb_confidence)
+        self._metrics.set_triple_barrier_probs(
+            strategy,
+            self._last_tb_probs.get("buy", 0.0),
+            self._last_tb_probs.get("sell", 0.0),
+            self._last_tb_probs.get("hold", 1.0),
+        )
+
+        # TrendEngine state
+        tech = self.trend_engine.technical.get_current_data()
+        if tech:
+            self._metrics.set_trend_ma_direction(strategy, tech.is_bullish_ma)
+
+            # Ichimoku position: -1=below, 0=in, 1=above
+            if bar.close > tech.cloud_top:
+                cloud_pos = 1
+            elif bar.close < tech.cloud_bottom:
+                cloud_pos = -1
+            else:
+                cloud_pos = 0
+            self._metrics.set_trend_ichimoku_position(strategy, cloud_pos)
+            self._metrics.set_trend_atr(strategy, tech.atr)
+
+        # Position state
+        if self.trend_engine.position_manager.has_position:
+            pos = self.trend_engine.position_manager.position
+            self._metrics.set_trend_position(strategy, pos.entry_price, pos.stop_price)
+        else:
+            self._metrics.set_trend_position(strategy, 0.0, 0.0)
 
     def generate_signal(self, bar: BarData) -> Signal:
         """Generate signal using state machine logic."""
@@ -219,15 +295,19 @@ class DualModeStrategy(BaseStrategy):
 
         if mode == TradingMode.AVOID:
             self._stats['avoid_bars'] += 1
-            return Signal.HOLD
+            signal = Signal.HOLD
 
         elif mode == TradingMode.MODE_A:
             self._stats['mode_a_bars'] += 1
-            return self._process_mode_a(bar)
+            signal = self._process_mode_a(bar)
 
         else:  # MODE_B
             self._stats['mode_b_bars'] += 1
-            return self._process_mode_b(bar)
+            signal = self._process_mode_b(bar)
+
+        # Emit metrics after processing
+        self._emit_mode_metrics(bar)
+        return signal
 
     def _notify_mode_change(self, prev: TradingMode, curr: TradingMode, bar: BarData) -> None:
         """Log mode change event."""
@@ -243,6 +323,10 @@ class DualModeStrategy(BaseStrategy):
                     'ofi_zscore': bar.ofi_zscore,
                 }
             )
+
+        # Record mode transition metric
+        if self._metrics:
+            self._metrics.record_mode_transition("dual_mode", prev.value, curr.value)
 
     def _process_mode_a(self, bar: BarData) -> Signal:
         """Process MODE_A: Arbitrage based on OFI z-score extremes."""
@@ -300,46 +384,180 @@ class DualModeStrategy(BaseStrategy):
         return df
 
     def _process_mode_b(self, bar: BarData) -> Signal:
-        """Process MODE_B: Triple Barrier Classification."""
-        # Update OHLCV buffer
+        """
+        Process MODE_B: Combined Triple Barrier + TrendEngine.
+
+        Entry Flow:
+        1. Triple Barrier provides direction signal (BUY/SELL)
+        2. TrendEngine provides technical confirmation (MA + Ichimoku)
+        3. Only enter if BOTH agree
+        4. TrendEngine PositionManager handles the position (ATR stops, time cuts)
+
+        Exit Flow:
+        1. TrendEngine PositionManager checks ATR trailing stop
+        2. TrendEngine PositionManager checks time cut
+        3. If triggered, close position
+        """
+        # Update OHLCV buffer for Triple Barrier
         self._update_ohlcv_buffer(bar)
 
-        # Try triple barrier predictor first
+        # Update TrendEngine bid/ask for execution
+        self.trend_engine.update_prices(
+            bid=bar.best_bid if bar.best_bid > 0 else bar.close,
+            ask=bar.best_ask if bar.best_ask > 0 else bar.close,
+        )
+
+        timestamp = bar.datetime.timestamp() if bar.datetime else time.time()
+
+        # Get technical data for confirmation
+        tech = self.trend_engine.technical.get_current_data()
+        current_atr = tech.atr if tech else 0.0
+
+        # === EXIT MANAGEMENT ===
+        # If TrendEngine has a position, check for exit conditions
+        if self.trend_engine.position_manager.has_position:
+            exit_signal = self.trend_engine.position_manager.update_and_check_exit(
+                current_price=bar.close,
+                current_atr=current_atr,
+                current_time=timestamp,
+            )
+
+            if exit_signal.should_exit:
+                # Close position
+                pos = self.trend_engine.position_manager.position
+                exit_price = bar.best_bid if pos.is_long else bar.best_ask
+                if exit_price <= 0:
+                    exit_price = bar.close
+
+                pnl = self.trend_engine.position_manager.close_position(
+                    exit_price, exit_signal.reason, timestamp
+                )
+
+                self.active_engine = None
+                self._notify_close(bar, f"{exit_signal.reason.value}: {exit_signal.message} (PnL: {pnl:.2f})")
+
+                # Return opposite signal to close
+                if pos.is_long:
+                    return Signal.SELL
+                else:
+                    return Signal.BUY
+
+            # Position OK, hold
+            return Signal.HOLD
+
+        # === ENTRY MANAGEMENT ===
+        # No position - check for new entry
+
+        # Check if technical indicators are ready
+        if tech is None or not tech.is_ready:
+            return Signal.HOLD
+
+        # Step 1: Get Triple Barrier direction signal
+        tb_signal = None
+        tb_confidence = 0.0
+        tb_probs = {}
+
         if self._triple_barrier is not None:
             df = self._get_ohlcv_dataframe()
             if df is not None:
                 try:
                     result = self._triple_barrier.generate_signal(df)
-                    signal_str = result["signal"]
-                    confidence = result["confidence"]
-                    probs = result["probabilities"]
+                    tb_signal = result["signal"]  # "BUY", "SELL", or "HOLD"
+                    tb_confidence = result["confidence"]
+                    tb_probs = result["probabilities"]
 
-                    if signal_str == "BUY":
-                        self._stats['triple_barrier_signals'] += 1
-                        self._stats['mode_b_signals'] += 1
-                        self.active_engine = "triple_barrier"
-                        reason = f"Triple Barrier BUY (conf: {confidence:.1%}, P: {probs['buy']:.1%}/{probs['sell']:.1%}/{probs['hold']:.1%})"
-                        self._notify_signal("BUY", "MODE_B", bar, reason)
-                        return Signal.BUY
-                    elif signal_str == "SELL":
-                        self._stats['triple_barrier_signals'] += 1
-                        self._stats['mode_b_signals'] += 1
-                        self.active_engine = "triple_barrier"
-                        reason = f"Triple Barrier SELL (conf: {confidence:.1%}, P: {probs['buy']:.1%}/{probs['sell']:.1%}/{probs['hold']:.1%})"
-                        self._notify_signal("SELL", "MODE_B", bar, reason)
-                        return Signal.SELL
-                    else:
-                        # HOLD - no action
-                        return Signal.HOLD
+                    # Track TB state for metrics
+                    self._last_tb_signal = {"BUY": 1, "SELL": -1, "HOLD": 0}.get(tb_signal, 0)
+                    self._last_tb_confidence = tb_confidence
+                    self._last_tb_probs = tb_probs
                 except Exception as e:
                     logger.warning(f"Triple barrier prediction failed: {e}")
-                    # Fall through to legacy logic
+                    tb_signal = None
 
-        # Fallback to legacy trend engine if triple barrier unavailable
-        return self._process_mode_b_legacy(bar)
+        # If no Triple Barrier signal, fallback to legacy
+        if tb_signal is None or tb_signal == "HOLD":
+            return self._process_mode_b_legacy(bar)
+
+        # Step 2: Get TrendEngine technical confirmation
+        # Check MA direction
+        ma_bullish = tech.is_bullish_ma  # Fast MA > Slow MA
+
+        # Check Ichimoku cloud position
+        above_cloud = bar.close > tech.cloud_top
+        below_cloud = bar.close < tech.cloud_bottom
+
+        # Step 3: Check if BOTH agree
+        confirmed = False
+        reason = ""
+
+        if tb_signal == "BUY":
+            # Triple Barrier says BUY - need MA bullish OR above cloud
+            if ma_bullish or above_cloud:
+                confirmed = True
+                tech_confirm = []
+                if ma_bullish:
+                    tech_confirm.append("MA bullish")
+                if above_cloud:
+                    tech_confirm.append("above cloud")
+                reason = f"TB BUY (conf: {tb_confidence:.1%}) + {', '.join(tech_confirm)}"
+            else:
+                logger.debug(f"Triple Barrier BUY rejected: MA bearish and below cloud")
+
+        elif tb_signal == "SELL":
+            # Triple Barrier says SELL - need MA bearish OR below cloud
+            if not ma_bullish or below_cloud:
+                confirmed = True
+                tech_confirm = []
+                if not ma_bullish:
+                    tech_confirm.append("MA bearish")
+                if below_cloud:
+                    tech_confirm.append("below cloud")
+                reason = f"TB SELL (conf: {tb_confidence:.1%}) + {', '.join(tech_confirm)}"
+            else:
+                logger.debug(f"Triple Barrier SELL rejected: MA bullish and above cloud")
+
+        # Step 4: If confirmed, open position via TrendEngine
+        if confirmed:
+            direction = "LONG" if tb_signal == "BUY" else "SHORT"
+            entry_price = bar.best_ask if direction == "LONG" else bar.best_bid
+            if entry_price <= 0:
+                entry_price = bar.close
+
+            # Open position with ATR-based stop
+            position = self.trend_engine.position_manager.open_position(
+                side=direction,
+                entry_price=entry_price,
+                size=self.config.order_size,
+                atr=current_atr,
+                symbol="",
+                timestamp=timestamp,
+            )
+
+            if position is None:
+                # Blocked by cooldown
+                return Signal.HOLD
+
+            self._stats['triple_barrier_signals'] += 1
+            self._stats['mode_b_signals'] += 1
+            self.active_engine = "triple_barrier+trend"
+
+            full_reason = f"{reason} | Stop: {position.stop_price:.2f} (ATR: {current_atr:.2f})"
+            self._notify_signal(tb_signal, "MODE_B", bar, full_reason)
+
+            return Signal.BUY if tb_signal == "BUY" else Signal.SELL
+
+        # No confirmed entry
+        return Signal.HOLD
 
     def _process_mode_b_legacy(self, bar: BarData) -> Signal:
-        """Fallback MODE_B: Trend Following with multi-horizon ensemble (legacy)."""
+        """
+        Fallback MODE_B: Trend Following with multi-horizon ensemble.
+
+        Used when:
+        1. Triple Barrier predictor is not available
+        2. Triple Barrier returns HOLD signal
+        3. Triple Barrier prediction failed
+        """
         # Technical indicators already updated in generate_signal()
         tech = self.trend_engine.technical.get_current_data()
 
@@ -397,14 +615,16 @@ class DualModeStrategy(BaseStrategy):
 
         if signal.action == "OPEN_LONG":
             self._stats['mode_b_signals'] += 1
+            self._stats['trend_fallback_signals'] += 1
             self.active_engine = "trend"
-            reason = f"LONG entry (prob: {up_prob:.1%})"
+            reason = f"LONG entry [fallback] (prob: {up_prob:.1%})"
             self._notify_signal("BUY", "MODE_B", bar, reason)
             return Signal.BUY
         elif signal.action == "OPEN_SHORT":
             self._stats['mode_b_signals'] += 1
+            self._stats['trend_fallback_signals'] += 1
             self.active_engine = "trend"
-            reason = f"SHORT entry (prob: {1-up_prob:.1%})"
+            reason = f"SHORT entry [fallback] (prob: {1-up_prob:.1%})"
             self._notify_signal("SELL", "MODE_B", bar, reason)
             return Signal.SELL
         elif signal.action == "CLOSE":

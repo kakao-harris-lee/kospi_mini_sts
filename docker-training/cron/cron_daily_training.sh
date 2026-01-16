@@ -17,7 +17,7 @@ set -euo pipefail
 PROJECT_DIR="/home/deploy/project/kospi_mini_sts/docker-training"
 MAIN_PROJECT_DIR="/home/deploy/project/kospi_mini_sts"
 LOG_DIR="$PROJECT_DIR/logs"
-VENV_PATH="$MAIN_PROJECT_DIR/.venv"
+VENV_PATH="$MAIN_PROJECT_DIR/venv"
 
 # Create log directory if needed
 mkdir -p "$LOG_DIR"

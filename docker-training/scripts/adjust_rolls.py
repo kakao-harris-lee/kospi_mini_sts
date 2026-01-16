@@ -119,13 +119,21 @@ def apply_ratio_adjustment(
     return df
 
 
-def validate_adjustment(df_raw: pd.DataFrame, df_adjusted: pd.DataFrame) -> dict:
+def validate_adjustment(
+    df_raw: pd.DataFrame,
+    df_adjusted: pd.DataFrame,
+    roll_indices: list[int],
+) -> dict:
     """
     Validate that the adjustment preserved returns correctly.
+
+    Returns at roll points are expected to differ (the gap is intentionally removed),
+    so we exclude those indices from validation.
 
     Args:
         df_raw: Original DataFrame
         df_adjusted: Adjusted DataFrame
+        roll_indices: Indices where rolls were detected (to exclude from validation)
 
     Returns:
         Dictionary with validation metrics
@@ -134,15 +142,38 @@ def validate_adjustment(df_raw: pd.DataFrame, df_adjusted: pd.DataFrame) -> dict
     raw_returns = np.log(df_raw['close'] / df_raw['close'].shift(1)).dropna()
     adj_returns = np.log(df_adjusted['close'] / df_adjusted['close'].shift(1)).dropna()
 
-    # Returns should be nearly identical (small floating point differences OK)
-    return_diff = np.abs(raw_returns.values - adj_returns.values)
+    # Create mask to exclude roll point returns from validation
+    # Roll indices are in df index space; returns start at index 1 (shift drops first)
+    # So roll_idx in returns corresponds to the return AT that index
+    valid_mask = np.ones(len(raw_returns), dtype=bool)
+    for roll_idx in roll_indices:
+        # Return at roll_idx is log(close[roll_idx] / close[roll_idx-1])
+        # This is at position (roll_idx - 1) in the returns array (due to dropna)
+        return_pos = roll_idx - 1
+        if 0 <= return_pos < len(valid_mask):
+            valid_mask[return_pos] = False
+
+    # Compare only non-roll returns (should be nearly identical)
+    raw_valid = raw_returns.values[valid_mask]
+    adj_valid = adj_returns.values[valid_mask]
+
+    if len(raw_valid) == 0:
+        return {
+            'max_return_difference': 0.0,
+            'mean_return_difference': 0.0,
+            'returns_preserved': True,
+            'excluded_roll_points': len(roll_indices),
+        }
+
+    return_diff = np.abs(raw_valid - adj_valid)
     max_diff = np.max(return_diff)
     mean_diff = np.mean(return_diff)
 
     return {
         'max_return_difference': float(max_diff),
         'mean_return_difference': float(mean_diff),
-        'returns_preserved': bool(max_diff < 0.0001),  # Allow tiny floating point error
+        'returns_preserved': bool(max_diff < 0.0001),  # Strict: only floating point error allowed
+        'excluded_roll_points': len(roll_indices),
     }
 
 
@@ -189,16 +220,18 @@ def adjust_rolls(
         print(f"\nApplying ratio adjustment...")
         df_adjusted = apply_ratio_adjustment(df, roll_indices)
 
-    # Validate
+    # Validate (excluding roll point returns which are expected to differ)
     print(f"\nValidating adjustment...")
-    validation = validate_adjustment(df, df_adjusted)
-    print(f"Max return difference: {validation['max_return_difference']:.8f}")
+    validation = validate_adjustment(df, df_adjusted, roll_indices)
+    print(f"Max return difference (excl. rolls): {validation['max_return_difference']:.8f}")
+    print(f"Excluded roll points: {validation.get('excluded_roll_points', 0)}")
     print(f"Returns preserved: {validation['returns_preserved']}")
 
     if not validation['returns_preserved']:
         raise ValueError(
             f"Roll adjustment validation failed: returns not preserved. "
-            f"Max return difference: {validation['max_return_difference']:.8f}. "
+            f"Max return difference (excluding roll points): {validation['max_return_difference']:.8f}. "
+            f"Expected < 0.0001 (floating point precision). "
             f"This may indicate a bug in the adjustment logic or corrupted data."
         )
 
