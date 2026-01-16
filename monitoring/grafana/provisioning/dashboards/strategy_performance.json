@@ -1105,7 +1105,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(strategy_total_pnl, strategy)",
+        "definition": "label_values(daily_pnl, strategy)",
         "hide": 0,
         "includeAll": true,
         "label": "Strategy",
@@ -1113,7 +1113,7 @@
         "name": "strategy",
         "options": [],
         "query": {
-          "query": "label_values(strategy_total_pnl, strategy)",
+          "query": "label_values(daily_pnl, strategy)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
