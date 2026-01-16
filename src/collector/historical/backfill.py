@@ -90,6 +90,20 @@ class KISToken:
 
         logger.info(f"[KISToken] Token refreshed, expires in {expires_in}s")
 
+    def is_token_valid(self) -> bool:
+        """Check if current token is valid."""
+        import time
+        return bool(self._token and time.time() < self._expires_at - 60)
+
+    def refresh_token(self) -> bool:
+        """Refresh the token. Returns True on success."""
+        try:
+            self._refresh()
+            return True
+        except Exception as e:
+            logger.warning(f"[KISToken] Token refresh failed: {e}")
+            return False
+
 
 _token = KISToken()
 

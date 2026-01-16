@@ -114,6 +114,17 @@ async def _run_service(
     except Exception as e:
         logger.warning(f"Failed to connect to ClickHouse: {e}")
 
+    # Initialize KIS Token Manager
+    kis_token_manager = None
+    try:
+        from src.collector.historical.backfill import KISToken
+        kis_token_manager = KISToken()
+        # Try to get a valid token to verify configuration
+        kis_token_manager.get()
+        logger.info("KIS Token Manager initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize KIS Token Manager: {e}")
+
     # Initialize services with config
     alert_service = AlertService(
         redis_client=redis_client,
@@ -125,6 +136,7 @@ async def _run_service(
         alert_service=alert_service,
         redis_client=redis_client,
         clickhouse_client=clickhouse_client,
+        kis_token_manager=kis_token_manager,
     )
     health_checker.CHECK_INTERVAL = health_interval
 
