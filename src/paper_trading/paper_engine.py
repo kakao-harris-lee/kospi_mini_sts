@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, List, Callable
 
 from config.settings import settings
 from src.common.metrics import get_metrics
+from src.common.decision_logger import DecisionLogger, DecisionLog
 
 from .virtual_broker import (
     VirtualBroker,
@@ -142,6 +143,12 @@ class PaperTradingEngine:
         self.equity_history: List[Dict[str, Any]] = []
         self.signal_history: List[Dict[str, Any]] = []
         self.kis_orders: List[Dict] = []  # KIS 주문 이력
+
+        # Decision logger for trade close logging
+        self._decision_logger = DecisionLogger(
+            session_id=f"paper_{self.run_id}",
+            enable_telegram=False,  # Paper engine handles its own notifications
+        )
 
         # Heartbeat for health monitoring
         self._heartbeat_interval = 30.0  # seconds
@@ -446,13 +453,47 @@ class PaperTradingEngine:
         )
 
     def _on_trade_close(self, trade: TradeRecord):
-        """거래 청산 콜백"""
+        """거래 청산 콜백 - logs to console AND decision_logger"""
         pnl_color = "+" if trade.pnl_amount >= 0 else ""
         logger.info(
             f"Trade closed: {trade.side.value} "
             f"{trade.entry_price:.2f} -> {trade.exit_price:.2f} "
             f"PnL: {pnl_color}{trade.pnl_amount:,.0f} ({trade.exit_reason})"
         )
+
+        # Log to decision_logger for analysis
+        self._log_trade_close(trade)
+
+    def _log_trade_close(self, trade: TradeRecord):
+        """Log trade close to decision_logger for analysis."""
+        try:
+            # Calculate hold time in minutes
+            hold_time_minutes = None
+            if trade.entry_time and trade.exit_time:
+                hold_delta = trade.exit_time - trade.entry_time
+                hold_time_minutes = int(hold_delta.total_seconds() / 60)
+
+            # Determine signal direction (entry was opposite of close)
+            entry_signal = "SELL" if trade.side == PositionSide.LONG else "BUY"
+
+            # Create decision log for close
+            decision = DecisionLog(
+                timestamp=trade.exit_time or datetime.now(),
+                signal="CLOSE",
+                price=trade.exit_price,
+                mode=self.strategy.get_mode_name() if hasattr(self.strategy, 'get_mode_name') else "unknown",
+                reason=trade.exit_reason or "unknown",
+                trade_id=f"t_{trade.entry_time.strftime('%Y%m%d_%H%M%S')}_{id(trade) % 0xFFFFFF:06x}" if trade.entry_time else "",
+                entry_price=trade.entry_price,
+                exit_price=trade.exit_price,
+                pnl_points=trade.pnl,
+                hold_time_minutes=hold_time_minutes,
+                strategy=self.strategy.__class__.__name__,
+            )
+
+            self._decision_logger.log_close(decision, entry_price=trade.entry_price, entry_time=trade.entry_time)
+        except Exception as e:
+            logger.error(f"Failed to log trade close: {e}")
 
     def _record_equity(self):
         """자산 기록"""
@@ -470,7 +511,8 @@ class PaperTradingEngine:
             # 현재 포지션 방향에 따라 반대 주문
             if self.kis_bridge:
                 side = "SELL" if self.broker.position.side == PositionSide.LONG else "BUY"
-                self.kis_bridge.place_order(side, 1, self.broker.position.current_price)
+                # Use broker's current price (not position.current_price which doesn't exist)
+                self.kis_bridge.place_order(side, 1, self.broker._current_price)
             self.broker.close_position(reason="SESSION_END")
             logger.info("Closed remaining position at session end")
 
