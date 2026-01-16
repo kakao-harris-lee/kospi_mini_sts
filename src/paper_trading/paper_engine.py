@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Callable
 
 from config.settings import settings
+from src.common.metrics import get_metrics
 
 from .virtual_broker import (
     VirtualBroker,
@@ -362,6 +363,13 @@ class PaperTradingEngine:
             'position': self.broker.position.side.value,
         }
         self.signal_history.append(signal_info)
+
+        # Record signal to Prometheus metrics
+        metrics = get_metrics()
+        strategy_name = self.strategy.__class__.__name__
+        signal_type = "ENTRY" if not self.broker.position.is_open else "EXIT"
+        direction = signal.name if hasattr(signal, 'name') else str(signal)
+        metrics.record_signal(strategy_name, signal_type, direction)
 
         logger.debug(f"Signal: {signal} at price {bar_data['close']:.2f}")
 
