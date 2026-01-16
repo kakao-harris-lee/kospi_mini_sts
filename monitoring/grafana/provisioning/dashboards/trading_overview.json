@@ -1015,7 +1015,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "redis_lag_seconds",
+          "expr": "redis_lag_seconds or vector(0)",
           "legendFormat": "{{stream}}",
           "refId": "A"
         }
@@ -1103,7 +1103,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "increase(api_errors_total[5m])",
+          "expr": "increase(api_errors_total[5m]) or vector(0)",
           "legendFormat": "{{api}} - {{error_type}}",
           "refId": "A"
         },
@@ -1112,7 +1112,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "increase(clickhouse_errors_total[5m])",
+          "expr": "increase(clickhouse_errors_total[5m]) or vector(0)",
           "legendFormat": "ClickHouse - {{table}}",
           "refId": "B"
         }
