@@ -124,6 +124,7 @@ This project uses **KIS "Short Codes"** which represent relative maturity positi
 1. **Async Only:** Never use `time.sleep()`; always use `await asyncio.sleep()`.
 2. **Safety:** Wrap KIS API calls in `try/except`. Handle rate limits gracefully.
 3. **Testing:** New features must have unit tests (`pytest tests/`). Use `scripts/test_e2e.py` for sanity checks.
+4. **Git Worktree:** When implementing functions, use git worktree for isolated development.
 
 ### Coding Standards
 
