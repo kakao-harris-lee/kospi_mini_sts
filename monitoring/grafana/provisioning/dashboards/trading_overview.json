@@ -503,7 +503,7 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": ["last"],
           "fields": "",
           "values": false
         },
@@ -516,7 +516,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(orders_executed_total{status=\"SUCCESS\"}[1h]))",
+          "expr": "sum(increase(orders_executed_total{status=\"SUCCESS\"}[1h])) or vector(0)",
           "legendFormat": "Orders",
           "refId": "A"
         }
