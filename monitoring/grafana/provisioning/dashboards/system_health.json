@@ -103,7 +103,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"redis\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"redis\"} or vector(0))",
           "refId": "A"
         }
       ],
@@ -190,7 +190,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"clickhouse\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"clickhouse\"} or vector(0))",
           "refId": "A"
         }
       ],
@@ -277,7 +277,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"kis_api\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"kis_api\"} or vector(0))",
           "refId": "A"
         }
       ],
@@ -364,7 +364,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"tick_collector\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"tick_collector\"} or vector(0))",
           "refId": "A"
         }
       ],
@@ -451,7 +451,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"feature_processor\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"feature_processor\"} or vector(0))",
           "refId": "A"
         }
       ],
@@ -538,7 +538,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"prediction_engine\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"prediction_engine\"} or vector(0))",
           "refId": "A"
         }
       ],
@@ -625,7 +625,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "health_check_status{service=\"strategy_manager\"} or vector(0)",
+          "expr": "max(health_check_status{service=\"strategy_manager\"} or vector(0))",
           "refId": "A"
         }
       ],

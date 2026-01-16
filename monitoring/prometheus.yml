@@ -53,3 +53,11 @@ scrape_configs:
       - source_labels: [__address__]
         target_label: instance
         replacement: 'strategy-manager'
+
+  - job_name: 'monitoring'
+    static_configs:
+      - targets: ['host.docker.internal:8083']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'monitoring'

@@ -16,6 +16,7 @@ from datetime import datetime
 import typer
 
 from config.settings import settings
+from src.common.metrics import init_metrics
 
 # Configure logging
 logging.basicConfig(
@@ -84,6 +85,10 @@ async def _run_service(
     )
 
     logger.info("Starting monitoring service...")
+
+    # Initialize Prometheus metrics server
+    init_metrics("monitoring", port=8083)
+    logger.info("Prometheus metrics server started on port 8083")
 
     # Initialize Redis
     redis_client = None
