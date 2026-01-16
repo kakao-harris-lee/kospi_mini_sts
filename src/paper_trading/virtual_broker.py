@@ -12,6 +12,8 @@ from enum import Enum
 from typing import Optional, List, Dict, Callable
 import uuid
 
+from src.common.metrics import get_metrics
+
 
 class OrderSide(str, Enum):
     BUY = "BUY"
@@ -121,6 +123,8 @@ class VirtualBroker:
         tick_size: float = 0.05,
         commission_rate: float = 0.00015,  # 0.015%
         slippage_ticks: int = 1,
+        strategy_name: str = "paper_trading",
+        symbol: str = "A05601",
     ):
         self.initial_capital = initial_capital
         self.capital = initial_capital
@@ -128,6 +132,11 @@ class VirtualBroker:
         self.tick_size = tick_size
         self.commission_rate = commission_rate
         self.slippage_ticks = slippage_ticks
+        self.strategy_name = strategy_name
+        self.symbol = symbol
+
+        # Prometheus metrics
+        self._metrics = get_metrics()
 
         # 상태
         self.position = VirtualPosition()
@@ -356,8 +365,10 @@ class VirtualBroker:
             self.on_fill(order)
 
     def _update_position_pnl(self):
-        """포지션 평가손익 업데이트"""
+        """포지션 평가손익 업데이트 및 Prometheus 메트릭 발행"""
         if not self.position.is_open:
+            # No position - set metrics to 0
+            self._metrics.update_position_pnl(self.strategy_name, self.symbol, 0)
             return
 
         if self.position.side == PositionSide.LONG:
@@ -368,6 +379,12 @@ class VirtualBroker:
         self.position.unrealized_pnl = (
             (pnl_points / self.tick_size) * self.tick_value * self.position.quantity
         )
+
+        # Update Prometheus metrics
+        self._metrics.update_position_pnl(
+            self.strategy_name, self.symbol, self.position.unrealized_pnl
+        )
+        self._metrics.update_daily_pnl(self.strategy_name, self.total_pnl)
 
     @property
     def equity(self) -> float:

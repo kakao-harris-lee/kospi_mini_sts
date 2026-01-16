@@ -36,7 +36,7 @@ monitoring_config = settings.monitoring
 @app.command()
 def run(
     redis_url: str = typer.Option(
-        f"redis://{settings.redis.host}:{settings.redis.port}",
+        f"redis://{settings.redis.host}:{settings.redis.port}/{settings.redis.db}",
         help="Redis connection URL",
     ),
     clickhouse_host: str = typer.Option(
@@ -221,7 +221,7 @@ async def _show_status():
     import redis.asyncio as aioredis
 
     try:
-        redis_url = f"redis://{settings.redis.host}:{settings.redis.port}"
+        redis_url = f"redis://{settings.redis.host}:{settings.redis.port}/{settings.redis.db}"
         redis_client = aioredis.from_url(redis_url, decode_responses=True)
 
         # Check pending alerts

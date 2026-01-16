@@ -14,6 +14,8 @@ from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
 
+from config.settings import settings
+
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 
@@ -151,7 +153,8 @@ async def _run_paper_trading_async(
     if not simulation:
         try:
             import redis.asyncio as aioredis
-            redis_client = await aioredis.from_url("redis://localhost:6379")
+            redis_url = f"redis://{settings.redis.host}:{settings.redis.port}/{settings.redis.db}"
+            redis_client = await aioredis.from_url(redis_url)
             await redis_client.ping()
             console.print("[green]Connected to Redis[/green]")
         except Exception as e:

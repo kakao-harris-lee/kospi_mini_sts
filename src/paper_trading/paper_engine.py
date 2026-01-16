@@ -10,6 +10,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Callable
 
+from config.settings import settings
+
 from .virtual_broker import (
     VirtualBroker,
     VirtualOrder,
@@ -106,7 +108,15 @@ class PaperTradingEngine:
         :param symbol: 거래 종목코드
         """
         self.strategy = strategy
-        self.broker = broker or VirtualBroker()
+        strategy_name = strategy.__class__.__name__
+        self.broker = broker or VirtualBroker(
+            strategy_name=strategy_name,
+            symbol=symbol,
+        )
+        # Update broker with strategy info if broker was passed in
+        if broker:
+            broker.strategy_name = strategy_name
+            broker.symbol = symbol
         self.redis = redis_client
         self.feature_stream = feature_stream
         self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -532,7 +542,8 @@ async def run_paper_trading(
     redis_client = None
     try:
         import redis.asyncio as aioredis
-        redis_client = await aioredis.from_url("redis://localhost:6379")
+        redis_url = f"redis://{settings.redis.host}:{settings.redis.port}/{settings.redis.db}"
+        redis_client = await aioredis.from_url(redis_url)
         await redis_client.ping()
     except Exception:
         logger.warning("Redis not available - running in simulation mode")
