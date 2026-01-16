@@ -430,7 +430,8 @@ class FeatureProcessor(StreamConsumer):
         super().__init__(
             stream_name=settings.redis.raw_stream,
             group_name=settings.consumer.processor_group,
-            consumer_name="processor_1"
+            consumer_name="processor_1",
+            component_name="feature_processor"  # For health check heartbeat
         )
         self.publisher = StreamPublisher(settings.redis.feature_stream)
         self.symbol_states: Dict[str, SymbolState] = {}

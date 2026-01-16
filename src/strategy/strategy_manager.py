@@ -124,7 +124,8 @@ class StrategyManager(StreamConsumer):
         super().__init__(
             stream_name=settings.redis.prediction_stream,
             group_name=settings.consumer.strategy_group,
-            consumer_name="strategy_1"
+            consumer_name="strategy_1",
+            component_name="strategy_manager"  # For health check heartbeat
         )
 
         self.order_publisher = StreamPublisher(settings.redis.order_stream)

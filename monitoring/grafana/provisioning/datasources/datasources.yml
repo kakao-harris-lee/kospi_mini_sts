@@ -1,8 +1,16 @@
 # Grafana Datasource Configuration
 apiVersion: 1
 
+# Delete existing datasources to re-provision with correct UIDs
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+  - name: ClickHouse
+    orgId: 1
+
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090

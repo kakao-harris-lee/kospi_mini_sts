@@ -176,7 +176,7 @@ class RegimeDetector:
         avg_volume = np.mean(list(self.volumes)[-20:-1])  # 최근 20분 평균 (현재 제외)
         current_volume = self.volumes[-1]
 
-        return current_volume > avg_volume * self.config.volume_surge_threshold
+        return bool(current_volume > avg_volume * self.config.volume_surge_threshold)
 
     def is_range_expansion(self) -> bool:
         """레인지 확장 여부 (현재 바의 범위가 ATR보다 큰지)"""
@@ -189,7 +189,7 @@ class RegimeDetector:
         if atr <= 0:
             return False
 
-        return current_range > atr * self.config.range_expansion_threshold
+        return bool(current_range > atr * self.config.range_expansion_threshold)
 
     def _detect_regime(self) -> VolatilityRegime:
         """레짐 판단 (내부)"""

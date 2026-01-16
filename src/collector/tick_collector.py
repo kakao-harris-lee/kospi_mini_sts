@@ -25,7 +25,7 @@ from threading import Thread
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from config.settings import settings
-from src.common import setup_logging, init_metrics, get_metrics, ClickHouseClient
+from src.common import setup_logging, init_metrics, get_metrics, ClickHouseClient, RedisClient
 from src.collector.kis_websocket import KISWebSocketAdapter, KISConfig, KISMarket
 from src.collector.data_collector import TickData
 from src.common.futures_code import get_front_month_code, get_kis_code, get_kospi200f_code, get_table_for_symbol
@@ -101,6 +101,10 @@ class TickDataCollector:
         self._running = False
         self._last_orderbook: Dict[str, TickData] = {}  # 심볼별 마지막 호가
 
+        # Heartbeat for health monitoring
+        self._last_heartbeat = 0.0
+        self._redis_client = RedisClient.get_client()
+
     def _ensure_tables(self):
         """ClickHouse 테이블 생성 확인"""
         if not self._db_client:
@@ -124,6 +128,19 @@ class TickDataCollector:
                 logger.info(f"Ensured table: {table_name}")
             except Exception as e:
                 logger.error(f"Failed to ensure table {table_name}: {e}")
+
+    def _publish_heartbeat(self):
+        """Publish heartbeat to Redis for health monitoring."""
+        now = time.time()
+        if now - self._last_heartbeat < 30.0:  # Every 30 seconds
+            return
+
+        try:
+            self._redis_client.set("heartbeat:tick_collector", str(now), ex=120)
+            self._last_heartbeat = now
+            logger.debug("Heartbeat published: tick_collector")
+        except Exception as e:
+            logger.warning(f"Failed to publish heartbeat: {e}")
 
     def _on_orderbook(self, tick: TickData):
         """
@@ -273,6 +290,9 @@ class TickDataCollector:
         if tick.tick_volume is not None and tick.tick_volume > 0:
             self._on_trade(tick)
 
+        # Publish heartbeat for health monitoring
+        self._publish_heartbeat()
+
         # 주기적 리포트
         now = time.time()
         if now - self._last_report > 60:
@@ -294,6 +314,9 @@ class TickDataCollector:
         metrics.set_websocket_status("kis_websocket", False)
 
         self._running = True
+
+        # Publish initial heartbeat
+        self._publish_heartbeat()
 
         try:
             # WebSocket 연결 및 구독

@@ -220,27 +220,35 @@ class StreamConsumer(ABC):
     Stream Consumer 베이스 클래스
     Consumer Group을 사용하여 안정적인 메시지 처리 보장
     """
-    
+
+    # Heartbeat interval in seconds
+    HEARTBEAT_INTERVAL = 30.0
+
     def __init__(
         self,
         stream_name: str,
         group_name: str,
-        consumer_name: str = None
+        consumer_name: str = None,
+        component_name: str = None
     ):
         self.stream = stream_name
         self.group = group_name
         self.consumer = consumer_name or f"{group_name}_worker_1"
         self.client = RedisClient.get_client()
         self.running = False
-        
+
+        # Component name for heartbeat publishing (health checks)
+        self._component_name = component_name
+        self._last_heartbeat_time = 0.0
+
         self._ensure_group_exists()
     
     def _ensure_group_exists(self):
         """Consumer Group이 없으면 생성"""
         try:
             self.client.xgroup_create(
-                self.stream, 
-                self.group, 
+                self.stream,
+                self.group,
                 id='0',  # 처음부터 읽기
                 mkstream=True  # Stream이 없으면 생성
             )
@@ -250,7 +258,31 @@ class StreamConsumer(ABC):
                 logger.debug(f"Consumer Group 이미 존재: {self.group}")
             else:
                 raise
-    
+
+    def set_component_name(self, name: str):
+        """Set component name for heartbeat publishing"""
+        self._component_name = name
+
+    def _publish_heartbeat(self):
+        """
+        Publish heartbeat to Redis for health monitoring.
+        Health checker reads heartbeat:{component_name} key to determine service status.
+        """
+        if not self._component_name:
+            return
+
+        now = time.time()
+        if now - self._last_heartbeat_time < self.HEARTBEAT_INTERVAL:
+            return
+
+        try:
+            heartbeat_key = f"heartbeat:{self._component_name}"
+            self.client.set(heartbeat_key, str(now), ex=120)  # Expire after 120s
+            self._last_heartbeat_time = now
+            logger.debug(f"Heartbeat published: {heartbeat_key}")
+        except Exception as e:
+            logger.warning(f"Failed to publish heartbeat: {e}")
+
     @abstractmethod
     def process_message(self, message: StreamMessage) -> bool:
         """
@@ -307,7 +339,10 @@ class StreamConsumer(ABC):
         """메인 처리 루프"""
         self.running = True
         logger.info(f"Consumer 시작: {self.consumer} [{self.stream}]")
-        
+
+        # Publish initial heartbeat
+        self._publish_heartbeat()
+
         # 1. 먼저 미처리 메시지 처리
         pending = self._read_pending()
         if pending:
@@ -318,10 +353,13 @@ class StreamConsumer(ABC):
                         self._ack(msg)
                 except Exception as e:
                     logger.error(f"메시지 처리 실패 (pending): {msg.id}, {e}")
-        
+
         # 2. 새 메시지 계속 처리
         while self.running:
             try:
+                # Publish heartbeat periodically
+                self._publish_heartbeat()
+
                 messages = self._read_new()
                 for msg in messages:
                     try:

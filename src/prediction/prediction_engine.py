@@ -309,7 +309,8 @@ class PredictionEngine(StreamConsumer):
         super().__init__(
             stream_name=settings.redis.feature_stream,
             group_name=settings.consumer.prediction_group,
-            consumer_name="prediction_1"
+            consumer_name="prediction_1",
+            component_name="prediction_engine"  # For health check heartbeat
         )
         self.publisher = StreamPublisher(settings.redis.prediction_stream)
         self.redis = RedisClient.get_client()
