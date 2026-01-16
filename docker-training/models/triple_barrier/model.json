@@ -13,6 +13,8 @@
   "barrier_k": 1.5,
   "max_horizon": 30,
   "balance_strategy": "both",
+  "loss_type": "ce",
+  "focal_gamma": null,
   "features": [
     "log_return",
     "ma_ratio_5",
@@ -29,14 +31,14 @@
     "atr_normalized"
   ],
   "metrics": {
-    "accuracy": 0.5221932114882507,
+    "accuracy": 47.21752930937388,
     "class_accuracy": {
-      "hold": 100.0,
-      "buy": 0.0,
-      "sell": 0.0
+      "hold": 90.19607843137256,
+      "buy": 63.29479768786127,
+      "sell": 30.781073591296316
     }
   },
-  "created_at": "2026-01-09T09:38:31.882947",
+  "created_at": "2026-01-16T23:51:13.683543",
   "train_samples": 1788,
   "val_samples": 19533
 }

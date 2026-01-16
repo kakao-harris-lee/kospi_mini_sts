@@ -338,6 +338,183 @@ STRATEGY_TRADE_COUNT_TODAY = Gauge(
     registry=REGISTRY,
 )
 
+# -----------------------------------------------------------------------------
+# Data Collection Status 메트릭 (T012)
+# -----------------------------------------------------------------------------
+
+DATA_COLLECTION_ROWS = Gauge(
+    "data_collection_rows",
+    "Total rows in data table",
+    ["table", "code"],
+    registry=REGISTRY,
+)
+
+DATA_COLLECTION_FIRST_DATE = Gauge(
+    "data_collection_first_date_timestamp",
+    "First data timestamp (unix)",
+    ["table", "code"],
+    registry=REGISTRY,
+)
+
+DATA_COLLECTION_LAST_DATE = Gauge(
+    "data_collection_last_date_timestamp",
+    "Last data timestamp (unix)",
+    ["table", "code"],
+    registry=REGISTRY,
+)
+
+DATA_COLLECTION_DAILY_CANDLES = Gauge(
+    "data_collection_daily_candles",
+    "Candles collected today",
+    ["table", "code"],
+    registry=REGISTRY,
+)
+
+# -----------------------------------------------------------------------------
+# Model Training Status 메트릭 (T013)
+# -----------------------------------------------------------------------------
+
+MODEL_TRAINING_STATUS = Gauge(
+    "model_training_status",
+    "Model training status (0=not_trained, 1=training, 2=trained)",
+    ["model_type"],
+    registry=REGISTRY,
+)
+
+MODEL_TRAINING_EPOCH = Gauge(
+    "model_training_epoch",
+    "Current training epoch",
+    ["model_type"],
+    registry=REGISTRY,
+)
+
+MODEL_TRAINING_LOSS = Gauge(
+    "model_training_loss",
+    "Current training loss",
+    ["model_type", "phase"],  # train, val
+    registry=REGISTRY,
+)
+
+MODEL_TRAINING_ACCURACY = Gauge(
+    "model_training_accuracy",
+    "Current training accuracy",
+    ["model_type", "phase"],  # train, val
+    registry=REGISTRY,
+)
+
+MODEL_LAST_TRAINED = Gauge(
+    "model_last_trained_timestamp",
+    "Last training completion timestamp (unix)",
+    ["model_type"],
+    registry=REGISTRY,
+)
+
+MODEL_VERSION = Gauge(
+    "model_version_info",
+    "Model version information (always 1, use labels)",
+    ["model_type", "version", "input_dim"],
+    registry=REGISTRY,
+)
+
+MODEL_INFERENCE_COUNT = Counter(
+    "model_inference_count_total",
+    "Total model inferences",
+    ["model_type"],
+    registry=REGISTRY,
+)
+
+MODEL_INFERENCE_LATENCY = Histogram(
+    "model_inference_latency_ms",
+    "Model inference latency in milliseconds",
+    ["model_type"],
+    buckets=(1, 2, 5, 10, 25, 50, 100, 250, 500),
+    registry=REGISTRY,
+)
+
+# -----------------------------------------------------------------------------
+# Trading Mode Metrics (DualMode Strategy)
+# -----------------------------------------------------------------------------
+
+TRADING_MODE = Gauge(
+    "trading_mode",
+    "Current trading mode (0=AVOID, 1=MODE_A, 2=MODE_B)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TRADING_MODE_ACTIVE_ENGINE = Gauge(
+    "trading_mode_active_engine",
+    "Active engine indicator (1=active, 0=inactive)",
+    ["strategy", "engine"],  # engine: arb, triple_barrier, trend, none
+    registry=REGISTRY,
+)
+
+# Triple Barrier State
+TRIPLE_BARRIER_SIGNAL = Gauge(
+    "triple_barrier_signal",
+    "Last TB signal (-1=SELL, 0=HOLD, 1=BUY)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TRIPLE_BARRIER_CONFIDENCE = Gauge(
+    "triple_barrier_confidence",
+    "Last TB confidence (0-1)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TRIPLE_BARRIER_PROBS = Gauge(
+    "triple_barrier_probs",
+    "TB class probabilities",
+    ["strategy", "class_name"],  # class_name: buy, sell, hold
+    registry=REGISTRY,
+)
+
+# TrendEngine State
+TREND_MA_DIRECTION = Gauge(
+    "trend_ma_direction",
+    "MA direction (1=bullish, 0=bearish)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TREND_ICHIMOKU_POSITION = Gauge(
+    "trend_ichimoku_position",
+    "Price vs cloud (-1=below, 0=in, 1=above)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TREND_ATR = Gauge(
+    "trend_atr",
+    "Current ATR value",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TREND_POSITION_STOP = Gauge(
+    "trend_position_stop",
+    "Current stop price (0 if no position)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+TREND_POSITION_ENTRY = Gauge(
+    "trend_position_entry",
+    "Current entry price (0 if no position)",
+    ["strategy"],
+    registry=REGISTRY,
+)
+
+# Mode History (Counter for transitions)
+TRADING_MODE_TRANSITIONS = Counter(
+    "trading_mode_transitions_total",
+    "Mode transition count",
+    ["strategy", "from_mode", "to_mode"],
+    registry=REGISTRY,
+)
+
 
 # =============================================================================
 # 메트릭 헬퍼 클래스
@@ -577,6 +754,111 @@ class TradingMetrics:
     def set_strategy_trade_count_today(self, strategy: str, count: int):
         """Set strategy trade count today"""
         STRATEGY_TRADE_COUNT_TODAY.labels(strategy=strategy).set(count)
+
+    # -------------------------------------------------------------------------
+    # Data Collection Status 메트릭 메서드 (T012)
+    # -------------------------------------------------------------------------
+
+    def set_data_collection_rows(self, table: str, code: str, rows: int):
+        """Set total rows in data table"""
+        DATA_COLLECTION_ROWS.labels(table=table, code=code).set(rows)
+
+    def set_data_collection_first_date(self, table: str, code: str, timestamp: float):
+        """Set first data timestamp"""
+        DATA_COLLECTION_FIRST_DATE.labels(table=table, code=code).set(timestamp)
+
+    def set_data_collection_last_date(self, table: str, code: str, timestamp: float):
+        """Set last data timestamp"""
+        DATA_COLLECTION_LAST_DATE.labels(table=table, code=code).set(timestamp)
+
+    def set_data_collection_daily_candles(self, table: str, code: str, count: int):
+        """Set candles collected today"""
+        DATA_COLLECTION_DAILY_CANDLES.labels(table=table, code=code).set(count)
+
+    # -------------------------------------------------------------------------
+    # Model Training Status 메트릭 메서드 (T013)
+    # -------------------------------------------------------------------------
+
+    def set_model_training_status(self, model_type: str, status: int):
+        """Set model training status (0=not_trained, 1=training, 2=trained)"""
+        MODEL_TRAINING_STATUS.labels(model_type=model_type).set(status)
+
+    def set_model_training_epoch(self, model_type: str, epoch: int):
+        """Set current training epoch"""
+        MODEL_TRAINING_EPOCH.labels(model_type=model_type).set(epoch)
+
+    def set_model_training_loss(self, model_type: str, phase: str, loss: float):
+        """Set training loss (phase: train or val)"""
+        MODEL_TRAINING_LOSS.labels(model_type=model_type, phase=phase).set(loss)
+
+    def set_model_training_accuracy(self, model_type: str, phase: str, accuracy: float):
+        """Set training accuracy (phase: train or val)"""
+        MODEL_TRAINING_ACCURACY.labels(model_type=model_type, phase=phase).set(accuracy)
+
+    def set_model_last_trained(self, model_type: str, timestamp: float):
+        """Set last training completion timestamp"""
+        MODEL_LAST_TRAINED.labels(model_type=model_type).set(timestamp)
+
+    def set_model_version(self, model_type: str, version: str, input_dim: int):
+        """Set model version info"""
+        MODEL_VERSION.labels(model_type=model_type, version=version, input_dim=str(input_dim)).set(1)
+
+    def record_model_inference(self, model_type: str):
+        """Record model inference"""
+        MODEL_INFERENCE_COUNT.labels(model_type=model_type).inc()
+
+    def observe_model_inference_latency(self, model_type: str, latency_ms: float):
+        """Observe model inference latency"""
+        MODEL_INFERENCE_LATENCY.labels(model_type=model_type).observe(latency_ms)
+
+    # -------------------------------------------------------------------------
+    # Trading Mode 메트릭 메서드 (DualMode Strategy)
+    # -------------------------------------------------------------------------
+
+    def set_trading_mode(self, strategy: str, mode: int):
+        """Set current trading mode (0=AVOID, 1=MODE_A, 2=MODE_B)"""
+        TRADING_MODE.labels(strategy=strategy).set(mode)
+
+    def set_active_engine(self, strategy: str, engine: str, active: bool):
+        """Set active engine indicator"""
+        TRADING_MODE_ACTIVE_ENGINE.labels(strategy=strategy, engine=engine).set(1 if active else 0)
+
+    def set_triple_barrier_signal(self, strategy: str, signal: int):
+        """Set TB signal (-1=SELL, 0=HOLD, 1=BUY)"""
+        TRIPLE_BARRIER_SIGNAL.labels(strategy=strategy).set(signal)
+
+    def set_triple_barrier_confidence(self, strategy: str, confidence: float):
+        """Set TB confidence (0-1)"""
+        TRIPLE_BARRIER_CONFIDENCE.labels(strategy=strategy).set(confidence)
+
+    def set_triple_barrier_probs(self, strategy: str, buy: float, sell: float, hold: float):
+        """Set TB class probabilities"""
+        TRIPLE_BARRIER_PROBS.labels(strategy=strategy, class_name="buy").set(buy)
+        TRIPLE_BARRIER_PROBS.labels(strategy=strategy, class_name="sell").set(sell)
+        TRIPLE_BARRIER_PROBS.labels(strategy=strategy, class_name="hold").set(hold)
+
+    def set_trend_ma_direction(self, strategy: str, bullish: bool):
+        """Set MA direction (1=bullish, 0=bearish)"""
+        TREND_MA_DIRECTION.labels(strategy=strategy).set(1 if bullish else 0)
+
+    def set_trend_ichimoku_position(self, strategy: str, position: int):
+        """Set price vs cloud (-1=below, 0=in, 1=above)"""
+        TREND_ICHIMOKU_POSITION.labels(strategy=strategy).set(position)
+
+    def set_trend_atr(self, strategy: str, atr: float):
+        """Set current ATR value"""
+        TREND_ATR.labels(strategy=strategy).set(atr)
+
+    def set_trend_position(self, strategy: str, entry: float, stop: float):
+        """Set position entry and stop prices"""
+        TREND_POSITION_ENTRY.labels(strategy=strategy).set(entry)
+        TREND_POSITION_STOP.labels(strategy=strategy).set(stop)
+
+    def record_mode_transition(self, strategy: str, from_mode: str, to_mode: str):
+        """Record mode transition"""
+        TRADING_MODE_TRANSITIONS.labels(
+            strategy=strategy, from_mode=from_mode, to_mode=to_mode
+        ).inc()
 
 
 # 전역 메트릭 인스턴스

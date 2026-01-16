@@ -29,6 +29,38 @@ from sklearn.preprocessing import StandardScaler
 
 
 # ============================================================
+# Focal Loss for Class Imbalance
+# ============================================================
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for handling class imbalance.
+
+    FL(p_t) = -α_t * (1 - p_t)^γ * log(p_t)
+
+    - Reduces loss for well-classified examples (easy)
+    - Focuses training on hard, misclassified examples
+    - gamma=2.0 is commonly used
+    """
+    def __init__(self, alpha: torch.Tensor = None, gamma: float = 2.0, reduction: str = 'mean'):
+        super().__init__()
+        self.alpha = alpha  # Class weights
+        self.gamma = gamma  # Focusing parameter
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
+        pt = torch.exp(-ce_loss)  # p_t = probability of correct class
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
+# ============================================================
 # Data Loading
 # ============================================================
 
@@ -527,12 +559,20 @@ def train_model(
     epochs: int = 100,
     lr: float = 0.001,
     device: str = "cpu",
-    save_path: str = "model.pth"
+    save_path: str = "model.pth",
+    loss_type: str = "ce",
+    focal_gamma: float = 2.0
 ):
     """Train classification model"""
     model = CNNLSTMClassifier(input_dim=input_dim, num_classes=3).to(device)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    # Select loss function
+    if loss_type == "focal":
+        criterion = FocalLoss(alpha=class_weights.to(device), gamma=focal_gamma)
+        print(f"Using Focal Loss (gamma={focal_gamma})")
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+        print("Using CrossEntropy Loss")
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
 
@@ -608,6 +648,11 @@ def main():
     parser.add_argument("--balance", type=str, default="both",
                         choices=["none", "undersample", "weights", "both"],
                         help="Class balancing strategy: none, undersample, weights, or both (default: both)")
+    parser.add_argument("--loss-type", type=str, default="ce",
+                        choices=["ce", "focal"],
+                        help="Loss function: ce (CrossEntropy) or focal (FocalLoss, better for imbalance)")
+    parser.add_argument("--focal-gamma", type=float, default=2.0,
+                        help="Focal loss gamma parameter (focusing strength, default: 2.0)")
 
     args = parser.parse_args()
 
@@ -732,7 +777,9 @@ def main():
         epochs=args.epochs,
         lr=args.lr,
         device=device,
-        save_path=args.output
+        save_path=args.output,
+        loss_type=args.loss_type,
+        focal_gamma=args.focal_gamma
     )
 
     # 10. Save metadata
@@ -748,6 +795,8 @@ def main():
         "barrier_k": args.k,
         "max_horizon": args.max_horizon,
         "balance_strategy": args.balance,
+        "loss_type": args.loss_type,
+        "focal_gamma": args.focal_gamma if args.loss_type == "focal" else None,
         "features": feature_cols,
         "metrics": metrics,
         "created_at": datetime.now().isoformat(),

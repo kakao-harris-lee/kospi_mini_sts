@@ -18,6 +18,7 @@ datasources:
     editable: false
 
   - name: ClickHouse
+    uid: clickhouse
     type: grafana-clickhouse-datasource
     access: proxy
     url: http://host.docker.internal:8123
@@ -25,4 +26,7 @@ datasources:
       defaultDatabase: kospi
       port: 8123
       protocol: http
+      username: default
+    secureJsonData:
+      password: "@1tidh6ls6ls"
     editable: false

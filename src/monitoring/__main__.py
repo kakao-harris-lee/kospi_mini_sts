@@ -82,6 +82,8 @@ async def _run_service(
         HealthChecker,
         AnomalyDetector,
         PerformanceTracker,
+        DataCollectionTracker,
+        ModelTrainingTracker,
     )
 
     logger.info("Starting monitoring service...")
@@ -151,11 +153,17 @@ async def _run_service(
         redis_client=redis_client,
     )
 
+    # Initialize data and model tracking
+    data_tracker = DataCollectionTracker(clickhouse_client=clickhouse_client)
+    model_tracker = ModelTrainingTracker(model_path="models/trading_lstm.pth")
+
     # Start services
     await alert_service.start()
     await health_checker.start()
     await anomaly_detector.start()
     await performance_tracker.start()
+    await data_tracker.start()
+    await model_tracker.start()
 
     # Send startup notification
     from src.monitoring.models import AlertType
@@ -169,6 +177,8 @@ async def _run_service(
 - Health Checker: {health_interval}s interval
 - Anomaly Detector: {anomaly_interval}s interval
 - Performance Tracker: 60s interval
+- Data Collection Tracker: 60s interval
+- Model Training Tracker: 30s interval
 
 <i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>""",
         priority="normal",
@@ -192,6 +202,8 @@ async def _run_service(
         )
 
         # Stop services
+        await model_tracker.stop()
+        await data_tracker.stop()
         await performance_tracker.stop()
         await anomaly_detector.stop()
         await health_checker.stop()
