@@ -38,6 +38,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from src.common.telegram import TelegramNotifier
 from src.common.futures_code import get_front_month_code, get_kis_code, get_current_futures_info
+from src.common.metrics import init_metrics
 
 # 로깅 설정
 logging.basicConfig(
@@ -422,7 +423,14 @@ class PaperTradingService:
         }
 
         strategy_instance = strategy_classes[self.strategy]()
-        broker = VirtualBroker(initial_capital=self.capital)
+        broker = VirtualBroker(
+            initial_capital=self.capital,
+            strategy_name=self.strategy,
+            symbol=self.futures_symbol,
+        )
+
+        # Initialize Prometheus metrics server on port 8082
+        init_metrics("strategy_manager", port=8082)
 
         # KIS 모의투자 API 설정
         kis_executor = None
@@ -458,11 +466,12 @@ class PaperTradingService:
                 redis_client = aioredis.Redis(
                     host=settings.redis.host,
                     port=settings.redis.port,
+                    db=settings.redis.db,  # Use DB2
                     password=settings.redis.password,
                     decode_responses=True,
                 )
                 await redis_client.ping()
-                logger.info("Redis 연결됨")
+                logger.info(f"Redis 연결됨 (DB{settings.redis.db})")
             except Exception as e:
                 logger.warning(f"Redis 연결 실패: {e}, 시뮬레이션 모드로 전환")
                 redis_client = None
