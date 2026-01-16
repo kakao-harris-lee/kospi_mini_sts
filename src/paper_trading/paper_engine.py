@@ -7,6 +7,7 @@ KIS 모의투자 API 연동 지원
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Callable
 
@@ -142,6 +143,29 @@ class PaperTradingEngine:
         self.signal_history: List[Dict[str, Any]] = []
         self.kis_orders: List[Dict] = []  # KIS 주문 이력
 
+        # Heartbeat for health monitoring
+        self._heartbeat_interval = 30.0  # seconds
+        self._last_heartbeat_time = 0.0
+
+    async def _publish_heartbeats(self):
+        """Publish heartbeats for prediction_engine and strategy_manager."""
+        if not self.redis:
+            return
+
+        now = time.time()
+        if now - self._last_heartbeat_time < self._heartbeat_interval:
+            return
+
+        try:
+            # Publish heartbeats for both services (paper trading acts as both)
+            for service in ["prediction_engine", "strategy_manager"]:
+                heartbeat_key = f"heartbeat:{service}"
+                await self.redis.set(heartbeat_key, str(now), ex=120)
+            self._last_heartbeat_time = now
+            logger.debug("Heartbeats published: prediction_engine, strategy_manager")
+        except Exception as e:
+            logger.warning(f"Failed to publish heartbeats: {e}")
+
     async def start(self, duration_seconds: int = None):
         """
         Paper Trading 시작
@@ -201,8 +225,14 @@ class PaperTradingEngine:
 
         logger.info(f"Listening to {self.feature_stream}...")
 
+        # Publish initial heartbeat
+        await self._publish_heartbeats()
+
         while self.is_running:
             try:
+                # Publish heartbeats periodically
+                await self._publish_heartbeats()
+
                 # 스트림에서 데이터 읽기
                 messages = await self.redis.xreadgroup(
                     groupname=group_name,
