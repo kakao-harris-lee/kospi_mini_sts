@@ -64,11 +64,11 @@ class OrderCommand:
     strategy_id: str = ""
     mode: TradingMode = TradingMode.MODE_B
     timestamp: float = 0.0
-    
+
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.time()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'symbol': self.symbol,
@@ -84,7 +84,7 @@ class OrderCommand:
 
 class BaseOrderExecutor(ABC):
     """주문 실행기 베이스 클래스"""
-    
+
     @abstractmethod
     def execute(self, order: OrderCommand) -> bool:
         """주문 실행"""
@@ -93,10 +93,10 @@ class BaseOrderExecutor(ABC):
 
 class DryRunOrderExecutor(BaseOrderExecutor):
     """테스트용 주문 실행기 (실제 주문 없음)"""
-    
+
     def __init__(self):
         self.orders: List[OrderCommand] = []
-    
+
     def execute(self, order: OrderCommand) -> bool:
         logger.info(
             f"[DRY RUN] {order.side.value} {order.size} {order.symbol} "
@@ -134,49 +134,55 @@ class StrategyManager(StreamConsumer):
         # 주문 실행기
         self.executor = order_executor or DryRunOrderExecutor()
 
-        # 전략 설정
+        # 설정 로드
         self.cfg = settings.strategy
         self.arb_cfg = settings.arbitrage
-
-        # MODE_A: ArbitrageEngine (Pure Basis Arbitrage)
-        self.arbitrage_engine = ArbitrageEngine(
-            max_spread_ticks=self.arb_cfg.max_spread_ticks,
-            depth_multiplier=self.arb_cfg.depth_multiplier,
-            basis_threshold=self.arb_cfg.basis_threshold,
-            order_size=self.arb_cfg.order_size,
-            quarterly_blackout_days=self.arb_cfg.quarterly_blackout_days,
-            risk_free_rate=self.arb_cfg.risk_free_rate,
-            basis_rolling_window=self.arb_cfg.basis_rolling_window,
-        )
-
-        # MODE_B: TrendEngine (Deep Learning Trend Following)
         self.trend_cfg = settings.trend
-        self.trend_engine = TrendEngine(
-            dl_threshold=self.trend_cfg.dl_threshold,
-            ma_fast_period=self.trend_cfg.ma_fast_period,
-            ma_slow_period=self.trend_cfg.ma_slow_period,
-            atr_period=self.trend_cfg.atr_period,
-            atr_stop_multiplier=self.trend_cfg.atr_stop_multiplier,
-            time_cut_minutes=self.trend_cfg.time_cut_minutes,
-            time_cut_atr_threshold=self.trend_cfg.time_cut_atr_threshold,
+
+        # [수정] DualModeStrategy (Triple Barrier + Trend) 초기화
+        # settings.py의 설정값들을 DualModeConfig에 매핑
+        from src.strategy.strategies.dual_mode import DualModeStrategy, DualModeConfig
+
+        dual_mode_config = DualModeConfig(
+            # Liquidity & Basis Filters
+            liquidity_avoid_threshold=self.cfg.liquidity_avoid_threshold,
+            basis_threshold=self.arb_cfg.basis_threshold,
+
+            # MODE_A: Arbitrage Settings
+            arb_max_spread_ticks=self.arb_cfg.max_spread_ticks,
+            arb_depth_multiplier=self.arb_cfg.depth_multiplier,
+
+            # MODE_B: Triple Barrier & Trend Settings
+            # (Triple Barrier 모델 경로는 기본값 사용)
+            trend_dl_threshold=self.trend_cfg.dl_threshold,
+            trend_ma_fast=self.trend_cfg.ma_fast_period,
+            trend_ma_slow=self.trend_cfg.ma_slow_period,
+            trend_atr_period=self.trend_cfg.atr_period,
+            trend_atr_multiplier=self.trend_cfg.atr_stop_multiplier,
+            trend_time_cut_minutes=self.trend_cfg.time_cut_minutes,
+            trend_time_cut_atr_threshold=self.trend_cfg.time_cut_atr_threshold,
+
+            # Common
             order_size=self.trend_cfg.order_size,
-            min_bars_required=self.trend_cfg.min_bars_required,
+            enable_decision_logging=True,
+            enable_telegram=True,
+            enable_clickhouse=True
         )
 
-        # Index data cache (from INDEX_STREAM)
+        self.strategy = DualModeStrategy(config=dual_mode_config)
+        logger.info(f"Initialized DualModeStrategy with threshold={dual_mode_config.trend_dl_threshold}")
+
+        # Index data cache (from INDEX_STREAM) - Optional used by internal logic if needed
         self._index_value: Optional[float] = None
         self._index_update_time: float = 0.0
 
         # 캐시된 Feature 데이터 (symbol -> latest feature)
         self._feature_cache: Dict[str, Dict] = {}
 
-        # Last bar timestamp for MODE_B bar updates
-        self._last_bar_time: Dict[str, float] = {}
-
         # 통계
         self._order_count = 0
         self._mode_counts = {m: 0 for m in TradingMode}
-    
+
     def _get_latest_feature(self, symbol: str) -> Optional[Dict]:
         """
         심볼의 최신 Feature 조회
@@ -217,11 +223,11 @@ class StrategyManager(StreamConsumer):
             logger.debug(f"Failed to get index value: {e}")
 
         return self._index_value
-    
+
     def _determine_mode(
-        self, 
-        liquidity_score: float, 
-        basis_gap: float, 
+        self,
+        liquidity_score: float,
+        basis_gap: float,
         up_prob: float
     ) -> TradingMode:
         """
@@ -230,15 +236,15 @@ class StrategyManager(StreamConsumer):
         # 1. 회피 구간 체크
         if liquidity_score < self.cfg.liquidity_avoid_threshold:
             return TradingMode.AVOID
-        
+
         # 2. Mode A 조건 체크
         if (liquidity_score > self.cfg.mode_a_liquidity_threshold and
             basis_gap > self.cfg.mode_a_basis_gap_sigma):
             return TradingMode.MODE_A
-        
+
         # 3. Mode B
         return TradingMode.MODE_B
-    
+
     def _execute_mode_a(
         self,
         symbol: str,
@@ -294,7 +300,7 @@ class StrategyManager(StreamConsumer):
             )
 
         return None
-    
+
     def _execute_mode_b(
         self,
         symbol: str,
@@ -378,7 +384,7 @@ class StrategyManager(StreamConsumer):
             if high > 0 and low > 0 and close > 0:
                 self.trend_engine.update_bar(high, low, close)
                 self._last_bar_time[symbol] = bar_time
-    
+
     def process_message(self, message: StreamMessage) -> bool:
         """
         예측 메시지 처리 및 전략 실행
@@ -386,176 +392,95 @@ class StrategyManager(StreamConsumer):
         try:
             data = message.data
             symbol = data.get('symbol')
-            
+
             if not symbol:
                 return True
-            
-            # 1. 예측 데이터 파싱
+
+            # 1. 예측 데이터 파싱 (Legacy support & Fallback)
             up_prob = float(data.get('up_prob', 0.5))
             down_prob = float(data.get('down_prob', 0.5))
-            
+
             # 2. Feature 데이터 조회
             feature = self._get_latest_feature(symbol)
             if not feature:
                 logger.debug(f"No feature data for {symbol}")
                 return True
-            
-            liquidity_score = float(feature.get('liquidity_score', 0))
-            basis_gap = float(feature.get('basis_gap', 0))  # 현물-선물 괴리
-            
-            # 3. 모드 결정
-            mode = self._determine_mode(liquidity_score, basis_gap, up_prob)
-            self._mode_counts[mode] += 1
 
-            # OFI Z-Score 조회 (상세 로깅용)
-            ofi_z_score = float(feature.get('ofi_z_score', 0))
+            # 3. BarData 생성 및 데이터 주입
+            # Feature 데이터를 BarData 객체로 변환
+            bar = BarData.from_dict(feature)
 
-            # 상세 로깅: 전략 평가
-            trading_logger.log_strategy_evaluation(
-                symbol=symbol,
-                timestamp=time.time(),
-                up_prob=up_prob,
-                down_prob=down_prob,
-                liquidity_score=liquidity_score,
-                basis_gap=basis_gap,
-                ofi_z_score=ofi_z_score,
-                mode=mode.value,
-                feature_data=feature
-            )
+            # 예측값 주입 (DualModeStrategy의 Legacy Fallback 로직에서 사용)
+            bar.up_prob = up_prob
+            bar.down_prob = down_prob
 
-            # 4. 모드별 실행
-            order: Optional[OrderCommand] = None
+            # Ensemble 확률이 있다면 주입 (Optional)
+            if 'up_prob_h10' in data:
+                bar.up_prob_h1 = float(data.get('up_prob_h1', 0.5))
+                bar.up_prob_h3 = float(data.get('up_prob_h3', 0.5))
+                bar.up_prob_h5 = float(data.get('up_prob_h5', 0.5))
+                bar.up_prob_h10 = float(data.get('up_prob_h10', 0.5))
+            else:
+                # Single model일 경우 h10을 메인 확률로 매핑
+                bar.up_prob_h10 = up_prob
 
-            if mode == TradingMode.AVOID:
-                logger.debug(f"{symbol}: AVOID mode (liquidity={liquidity_score:.1f})")
-                trading_logger.log_no_order(
+            # 4. [수정] 전략에게 판단 위임 (DualModeStrategy가 내부적으로 Triple Barrier 등 수행)
+            from src.strategy.base import Signal
+            signal = self.strategy.generate_signal(bar)
+
+            # 현재 모드 카운팅 업데이트
+            current_mode_enum = TradingMode(self.strategy.current_mode.value)
+            self._mode_counts[current_mode_enum] += 1
+
+            # 5. 주문 실행 처리
+            if signal == Signal.BUY or signal == Signal.SELL:
+                side = OrderSide.BUY if signal == Signal.BUY else OrderSide.SELL
+
+                # 주문 유형 결정 (MODE_A는 지정가, MODE_B는 시장가 선호)
+                # DualModeStrategy 내부 로직에 따라 유연하게 대응
+                order_type = OrderType.MARKET
+                price = None
+
+                if current_mode_enum == TradingMode.MODE_A:
+                    order_type = OrderType.LIMIT
+                    # 지정가 가격 설정 (Buy: Best Bid, Sell: Best Ask)
+                    price = bar.best_bid if side == OrderSide.BUY else bar.best_ask
+
+                # 주문 명령 생성
+                order = OrderCommand(
                     symbol=symbol,
-                    timestamp=time.time(),
-                    reason=f"AVOID mode - Low liquidity: {liquidity_score:.1f}"
-                )
-                # TODO: 기존 포지션 청산 로직
-
-            elif mode == TradingMode.MODE_A:
-                order = self._execute_mode_a(symbol, feature)
-                if not order:
-                    # Get rejection reason from arbitrage engine stats
-                    arb_stats = self.arbitrage_engine.get_stats()
-                    trading_logger.log_no_order(
-                        symbol=symbol,
-                        timestamp=time.time(),
-                        reason=f"MODE_A - Arbitrage filter rejected (pass_rate={arb_stats.get('pass_rate', 0):.1%})"
-                    )
-
-            elif mode == TradingMode.MODE_B:
-                order = self._execute_mode_b(symbol, up_prob, feature)
-                if not order:
-                    # Get rejection reason from trend engine
-                    trend_stats = self.trend_engine.get_stats()
-                    filter_stats = trend_stats.get('filter', {})
-                    trading_logger.log_no_order(
-                        symbol=symbol,
-                        timestamp=time.time(),
-                        reason=f"MODE_B - Ensemble filter rejected (signal_rate={filter_stats.get('signal_rate', 0):.1%})"
-                    )
-            
-            # 5. 주문 실행
-            if order:
-                # Build reason and scores based on mode
-                if order.mode == TradingMode.MODE_A:
-                    basis_data = self.arbitrage_engine.basis_calculator.get_current_data()
-                    reason = f"Basis z={basis_data.basis_zscore:.2f}σ" if basis_data else "Arbitrage signal"
-                    scores = {
-                        'basis_zscore': basis_data.basis_zscore if basis_data else 0,
-                        'basis': basis_data.basis if basis_data else 0,
-                        'fair_value': basis_data.fair_value if basis_data else 0,
-                        'liquidity_score': liquidity_score,
-                    }
-                elif order.mode == TradingMode.MODE_B:
-                    tech = self.trend_engine.technical.get_current_data()
-                    pos_info = self.trend_engine.position_manager.get_position_info()
-                    if 'EXIT' in order.strategy_id:
-                        reason = f"Exit: {order.strategy_id}"
-                    else:
-                        reason = f"Ensemble passed: DL={up_prob:.1%}, MA_bull={tech.is_bullish_ma if tech else 'N/A'}"
-                    scores = {
-                        'up_prob': up_prob,
-                        'ma_fast': tech.ma_fast if tech else 0,
-                        'ma_slow': tech.ma_slow if tech else 0,
-                        'atr': tech.atr if tech else 0,
-                        'stop_price': pos_info.get('current_stop', 0),
-                    }
-                else:
-                    reason = f"Up={up_prob:.3f}, Down={down_prob:.3f}, LIQ={liquidity_score:.1f}"
-                    scores = {
-                        'ofi_score': ofi_z_score,
-                        'liquidity_score': liquidity_score,
-                        'up_prob': up_prob,
-                        'down_prob': down_prob
-                    }
-
-                # 상세 로깅: 주문 결정
-                trading_logger.log_order_decision(
-                    symbol=order.symbol,
-                    timestamp=order.timestamp,
-                    side=order.side.value,
-                    order_type=order.order_type.value,
-                    size=order.size,
-                    price=order.price,
-                    strategy_id=order.strategy_id,
-                    mode=order.mode.value,
-                    reason=reason,
-                    scores=scores
+                    side=side,
+                    order_type=order_type,
+                    size=self.strategy.config.order_size,
+                    price=price,
+                    strategy_id=f"DualMode_{side.value}",
+                    mode=current_mode_enum,
+                    timestamp=time.time()
                 )
 
+                # 주문 실행
                 success = self.executor.execute(order)
-                metrics = get_metrics()
-
-                # 시그널 메트릭 기록
-                metrics.record_signal(
-                    strategy=order.strategy_id,
-                    signal_type=order.mode.value,
-                    direction=order.side.value
-                )
 
                 if success:
                     self.order_publisher.publish(order.to_dict())
                     self._order_count += 1
 
-                    # 주문 성공 메트릭
-                    metrics.record_order(
-                        strategy=order.strategy_id,
-                        order_type=order.order_type.value,
-                        side=order.side.value,
-                        status="SUCCESS"
+                    logger.info(
+                        f"Order Placed: {side.value} {order.size} {symbol} "
+                        f"[{current_mode_enum.value}] Price={price or 'MKT'}"
                     )
 
-                    logger.info(
-                        f"Order: {order.side.value} {order.size} {symbol} "
-                        f"[{order.mode.value}] Up={up_prob:.2f}"
-                    )
-                else:
-                    # 주문 실패 메트릭
-                    metrics.record_order(
-                        strategy=order.strategy_id,
-                        order_type=order.order_type.value,
-                        side=order.side.value,
-                        status="FAILED"
-                    )
-            
-            # 6. 주기적 통계
+            # 6. 주기적 통계 로그
             total_processed = sum(self._mode_counts.values())
             if total_processed % 1000 == 0 and total_processed > 0:
-                logger.info(
-                    f"Stats - Orders: {self._order_count}, "
-                    f"Modes: {dict(self._mode_counts)}"
-                )
-            
+                stats = self.strategy.get_stats()
+                logger.info(f"Strategy Stats: {stats}")
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Strategy error: {e}", exc_info=True)
             return False
-
 
 class KISOrderExecutorAdapter(BaseOrderExecutor):
     """한투 주문 실행기 어댑터"""
