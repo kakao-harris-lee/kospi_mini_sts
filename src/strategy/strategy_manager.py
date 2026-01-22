@@ -68,6 +68,9 @@ class OrderCommand:
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.time()
+        # Validate minimum order quantity (1 contract for KOSPI Mini Futures)
+        if self.size < 1:
+            raise ValueError(f"Order size must be at least 1 contract, got {self.size}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {

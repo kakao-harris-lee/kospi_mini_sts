@@ -553,6 +553,78 @@ class TestStreamContracts:
         is_valid, errors = ORDER_COMMAND_CONTRACT.validate(valid_order, ValidationMode.STRICT)
         assert is_valid
 
+    def test_order_command_minimum_quantity_validation(self):
+        """Test ORDER_COMMAND_CONTRACT enforces minimum quantity of 1"""
+        from src.common.stream_contracts import ORDER_COMMAND_CONTRACT, ValidationMode
+
+        # Valid order with size = 1
+        valid_order = {
+            "symbol": "101V3000",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "size": "1",
+            "strategy_id": "pure_micro",
+            "timestamp": "1705312800.0",
+        }
+
+        is_valid, errors = ORDER_COMMAND_CONTRACT.validate(valid_order, ValidationMode.STRICT)
+        assert is_valid, f"Valid order rejected: {errors}"
+
+        # Valid order with size = 2 (integer)
+        valid_order_int = {
+            "symbol": "101V3000",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "size": 2,
+            "strategy_id": "pure_micro",
+            "timestamp": "1705312800.0",
+        }
+
+        is_valid, errors = ORDER_COMMAND_CONTRACT.validate(valid_order_int, ValidationMode.STRICT)
+        assert is_valid, f"Valid order with int size rejected: {errors}"
+
+        # Invalid order with size = 0
+        invalid_order_zero = {
+            "symbol": "101V3000",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "size": "0",
+            "strategy_id": "pure_micro",
+            "timestamp": "1705312800.0",
+        }
+
+        is_valid, errors = ORDER_COMMAND_CONTRACT.validate(invalid_order_zero, ValidationMode.WARN)
+        assert not is_valid, "Order with size=0 should be rejected"
+        assert any("size" in err.lower() for err in errors), f"Expected size validation error, got: {errors}"
+
+        # Invalid order with negative size
+        invalid_order_negative = {
+            "symbol": "101V3000",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "size": "-1",
+            "strategy_id": "pure_micro",
+            "timestamp": "1705312800.0",
+        }
+
+        is_valid, errors = ORDER_COMMAND_CONTRACT.validate(invalid_order_negative, ValidationMode.WARN)
+        assert not is_valid, "Order with negative size should be rejected"
+        assert any("size" in err.lower() for err in errors), f"Expected size validation error, got: {errors}"
+
+        # Invalid order with fractional size < 1
+        invalid_order_fraction = {
+            "symbol": "101V3000",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "size": "0.5",
+            "strategy_id": "pure_micro",
+            "timestamp": "1705312800.0",
+        }
+
+        is_valid, errors = ORDER_COMMAND_CONTRACT.validate(invalid_order_fraction, ValidationMode.WARN)
+        assert not is_valid, "Order with size=0.5 should be rejected"
+        assert any("size" in err.lower() for err in errors), f"Expected size validation error, got: {errors}"
+
     def test_get_contract_by_name(self):
         """Test getting contract by stream name"""
         from src.common.stream_contracts import get_contract

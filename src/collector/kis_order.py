@@ -55,6 +55,11 @@ class OrderRequest:
     quantity: int         # 수량
     price: float = 0      # 가격 (시장가일 경우 0)
 
+    def __post_init__(self):
+        """Validate minimum order quantity (1 contract for KOSPI Mini Futures)"""
+        if self.quantity < 1:
+            raise ValueError(f"Order quantity must be at least 1 contract, got {self.quantity}")
+
 
 @dataclass
 class OrderResponse:

@@ -240,7 +240,13 @@ ORDER_COMMAND_CONTRACT = StreamContract(
         FieldSpec("symbol", (str,), True, "Futures code to trade"),
         FieldSpec("side", (str,), True, "BUY or SELL"),
         FieldSpec("order_type", (str,), True, "MARKET or LIMIT"),
-        FieldSpec("size", (str, float, int), True, "Order quantity"),
+        FieldSpec(
+            "size",
+            (str, float, int),
+            True,
+            "Order quantity (minimum 1 contract)",
+            validator=lambda x: float(x) >= 1.0
+        ),
         FieldSpec("price", (str, float, int), False, "Limit price (for LIMIT orders)"),
         FieldSpec("strategy_id", (str,), True, "Strategy that generated this order"),
         FieldSpec("mode", (str,), False, "Trading mode (A/B)"),

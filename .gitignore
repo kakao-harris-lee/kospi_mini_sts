@@ -58,3 +58,5 @@ secrets.json
 docker-training/.claude/
 docker-training/.specify/
 specs/
+
+.serena/
