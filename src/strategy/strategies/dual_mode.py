@@ -591,21 +591,14 @@ class DualModeStrategy(BaseStrategy):
             # Use h10 as the primary probability for logging
             up_prob = bar.up_prob_h10
         else:
-            # Fallback: Use single up_prob or MA + Ichimoku-based momentum
+            # No real DL predictions available
+            # DO NOT generate synthetic probabilities from MA + Ichimoku
+            # This was causing blind trading losses
             up_prob = bar.up_prob
-            if up_prob == 0.5 and tech is not None:
-                ma_bullish = tech.is_bullish_ma
-                above_cloud = tech.current_price > tech.cloud_top
-                below_cloud = tech.current_price < tech.cloud_bottom
-
-                if ma_bullish and above_cloud:
-                    up_prob = 0.80
-                elif ma_bullish:
-                    up_prob = 0.70
-                elif not ma_bullish and below_cloud:
-                    up_prob = 0.20
-                elif not ma_bullish:
-                    up_prob = 0.30
+            if up_prob == 0.5:
+                # No prediction available - do not trade
+                logger.debug("MODE_B fallback: No DL prediction available, skipping entry")
+                return Signal.HOLD
 
             signal = self.trend_engine.check(
                 up_prob=up_prob,

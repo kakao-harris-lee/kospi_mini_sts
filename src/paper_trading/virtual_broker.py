@@ -119,7 +119,7 @@ class VirtualBroker:
     def __init__(
         self,
         initial_capital: float = 10_000_000,
-        tick_value: float = 250_000,  # KOSPI200 선물 1틱 = 0.05포인트 * 50만원 = 25,000원
+        tick_value: float = 2_500,  # KOSPI200 Mini 1틱 = 0.05포인트 * 5만원 = 2,500원
         tick_size: float = 0.05,
         commission_rate: float = 0.00015,  # 0.015%
         slippage_ticks: int = 1,
