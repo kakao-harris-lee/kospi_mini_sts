@@ -76,8 +76,9 @@ class DualModeConfig:
     liquidity_avoid_threshold: float = 40.0    # Below this = AVOID
     liquidity_mode_a_threshold: float = 50.0   # Above this = MODE_A eligible
 
-    # Basis thresholds for MODE_A
-    basis_threshold: float = 1.5  # Z-score threshold for arbitrage (lowered for more signals)
+    # Basis thresholds for MODE_A (with hysteresis)
+    basis_threshold: float = 1.5  # Z-score threshold to ENTER MODE_A
+    basis_exit_threshold: float = 1.0  # Z-score threshold to EXIT MODE_A (hysteresis)
 
     # MODE_A: Arbitrage settings
     arb_max_spread_ticks: int = 4  # Allow wider spreads
@@ -194,7 +195,7 @@ class DualModeStrategy(BaseStrategy):
         self._last_tb_probs: Dict[str, float] = {"buy": 0.0, "sell": 0.0, "hold": 1.0}
 
     def _determine_mode(self, bar: BarData) -> TradingMode:
-        """Determine trading mode based on current conditions."""
+        """Determine trading mode based on current conditions with hysteresis."""
         # Check liquidity (use bid_ask_imbalance as proxy, or spread)
         spread = bar.spread if bar.spread > 0 else (bar.best_ask - bar.best_bid)
 
@@ -202,13 +203,22 @@ class DualModeStrategy(BaseStrategy):
         if spread > 0.5:
             return TradingMode.AVOID
 
-        # Check basis for arbitrage opportunity
+        # Check basis for arbitrage opportunity with hysteresis
         # Use OFI z-score as proxy for basis deviation
-        if abs(bar.ofi_zscore) > self.config.basis_threshold:
-            return TradingMode.MODE_A
+        ofi_abs = abs(bar.ofi_zscore)
 
-        # Default to MODE_B (trend following)
-        return TradingMode.MODE_B
+        if self.current_mode == TradingMode.MODE_A:
+            # Currently in MODE_A: stay until z-score drops below exit threshold
+            if ofi_abs >= self.config.basis_exit_threshold:
+                return TradingMode.MODE_A
+            else:
+                return TradingMode.MODE_B
+        else:
+            # Currently in MODE_B or AVOID: enter MODE_A only if exceeds entry threshold
+            if ofi_abs > self.config.basis_threshold:
+                return TradingMode.MODE_A
+            else:
+                return TradingMode.MODE_B
 
     def _emit_mode_metrics(self, bar: BarData) -> None:
         """Emit current mode and engine state to Prometheus metrics."""
