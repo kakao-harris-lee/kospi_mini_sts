@@ -81,12 +81,12 @@ class DualModeConfig:
     basis_exit_threshold: float = 1.0  # Z-score threshold to EXIT MODE_A (hysteresis)
 
     # MODE_A: Arbitrage settings
-    arb_max_spread_ticks: int = 4  # Allow wider spreads
-    arb_depth_multiplier: float = 3.0
+    arb_max_spread_ticks: int = 6  # Allow wider spreads (was 4)
+    arb_depth_multiplier: float = 2.0  # Relaxed depth requirement (was 3.0)
 
     # MODE_B: Triple Barrier Classification
     triple_barrier_model_dir: str = "docker-training/models/triple_barrier"
-    triple_barrier_threshold: float = 0.70  # Confidence threshold for BUY/SELL
+    triple_barrier_threshold: float = 0.60  # Lowered confidence threshold (was 0.70)
     triple_barrier_buffer_size: int = 100  # Rolling OHLCV buffer size
 
     # MODE_B: Trend settings (legacy - used as fallback)
@@ -346,14 +346,17 @@ class DualModeStrategy(BaseStrategy):
 
         # Check spread is acceptable
         spread = bar.spread if bar.spread > 0 else (bar.best_ask - bar.best_bid)
-        if spread > self.config.arb_max_spread_ticks * 0.05:  # 0.05 point per tick
+        max_spread = self.config.arb_max_spread_ticks * 0.05  # 6 * 0.05 = 0.30
+        if spread > max_spread:
+            logger.debug(f"MODE_A blocked: spread {spread:.3f} > {max_spread:.3f}")
             return Signal.HOLD
 
         # Check depth is sufficient
         total_bid_qty = bar.bid_qty1 + bar.bid_qty2 + bar.bid_qty3
         total_ask_qty = bar.ask_qty1 + bar.ask_qty2 + bar.ask_qty3
-        min_depth = self.config.order_size * self.config.arb_depth_multiplier
+        min_depth = self.config.order_size * self.config.arb_depth_multiplier  # 1.0 * 2.0 = 2.0
         if total_bid_qty < min_depth or total_ask_qty < min_depth:
+            logger.debug(f"MODE_A blocked: depth bid={total_bid_qty:.0f} ask={total_ask_qty:.0f} < {min_depth:.0f}")
             return Signal.HOLD
 
         # Arbitrage signal: extreme OFI z-score suggests mean reversion
@@ -496,35 +499,46 @@ class DualModeStrategy(BaseStrategy):
         above_cloud = bar.close > tech.cloud_top
         below_cloud = bar.close < tech.cloud_bottom
 
-        # Step 3: Check if BOTH agree
+        # Step 3: Accept TB signal with minimal confirmation (relaxed from requiring both MA + Ichimoku)
+        # Now: accept TB signal if confidence is high enough, with logging of technical context
         confirmed = False
         reason = ""
 
         if tb_signal == "BUY":
-            # Triple Barrier says BUY - need MA bullish OR above cloud
-            if ma_bullish or above_cloud:
-                confirmed = True
-                tech_confirm = []
-                if ma_bullish:
-                    tech_confirm.append("MA bullish")
-                if above_cloud:
-                    tech_confirm.append("above cloud")
-                reason = f"TB BUY (conf: {tb_confidence:.1%}) + {', '.join(tech_confirm)}"
+            # Triple Barrier says BUY - accept with high confidence, log technical context
+            tech_context = []
+            if ma_bullish:
+                tech_context.append("MA bullish")
             else:
-                logger.debug(f"Triple Barrier BUY rejected: MA bearish and below cloud")
+                tech_context.append("MA bearish")
+            if above_cloud:
+                tech_context.append("above cloud")
+            elif below_cloud:
+                tech_context.append("below cloud")
+            else:
+                tech_context.append("in cloud")
+
+            # Accept if confidence meets threshold (already checked by TB predictor)
+            confirmed = True
+            reason = f"TB BUY (conf: {tb_confidence:.1%}) [{', '.join(tech_context)}]"
 
         elif tb_signal == "SELL":
-            # Triple Barrier says SELL - need MA bearish OR below cloud
-            if not ma_bullish or below_cloud:
-                confirmed = True
-                tech_confirm = []
-                if not ma_bullish:
-                    tech_confirm.append("MA bearish")
-                if below_cloud:
-                    tech_confirm.append("below cloud")
-                reason = f"TB SELL (conf: {tb_confidence:.1%}) + {', '.join(tech_confirm)}"
+            # Triple Barrier says SELL - accept with high confidence, log technical context
+            tech_context = []
+            if ma_bullish:
+                tech_context.append("MA bullish")
             else:
-                logger.debug(f"Triple Barrier SELL rejected: MA bullish and above cloud")
+                tech_context.append("MA bearish")
+            if above_cloud:
+                tech_context.append("above cloud")
+            elif below_cloud:
+                tech_context.append("below cloud")
+            else:
+                tech_context.append("in cloud")
+
+            # Accept if confidence meets threshold
+            confirmed = True
+            reason = f"TB SELL (conf: {tb_confidence:.1%}) [{', '.join(tech_context)}]"
 
         # Step 4: If confirmed, open position via TrendEngine
         if confirmed:
@@ -601,14 +615,25 @@ class DualModeStrategy(BaseStrategy):
             # Use h10 as the primary probability for logging
             up_prob = bar.up_prob_h10
         else:
-            # No real DL predictions available
-            # DO NOT generate synthetic probabilities from MA + Ichimoku
-            # This was causing blind trading losses
+            # Fallback: Use single up_prob or MA + Ichimoku-based momentum
+            # Re-enabled blind fallback - better to have signals than none
             up_prob = bar.up_prob
-            if up_prob == 0.5:
-                # No prediction available - do not trade
-                logger.debug("MODE_B fallback: No DL prediction available, skipping entry")
-                return Signal.HOLD
+            if up_prob == 0.5 and tech is not None:
+                # Generate synthetic probability from technical indicators
+                ma_bullish = tech.is_bullish_ma
+                above_cloud = tech.current_price > tech.cloud_top
+                below_cloud = tech.current_price < tech.cloud_bottom
+
+                if ma_bullish and above_cloud:
+                    up_prob = 0.75  # Slightly lower than before (was 0.80)
+                elif ma_bullish:
+                    up_prob = 0.65  # (was 0.70)
+                elif not ma_bullish and below_cloud:
+                    up_prob = 0.25  # (was 0.20)
+                elif not ma_bullish:
+                    up_prob = 0.35  # (was 0.30)
+
+                logger.debug(f"MODE_B fallback: Using synthetic prob={up_prob:.1%} from MA+Ichimoku")
 
             signal = self.trend_engine.check(
                 up_prob=up_prob,
