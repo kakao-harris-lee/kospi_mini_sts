@@ -155,7 +155,8 @@ class TripleBarrierPredictor:
             input_dim=meta["input_dim"],
             num_classes=meta.get("num_classes", 3)
         )
-        model.load_state_dict(torch.load(model_path, map_location=self.device))
+        # Use weights_only=True to prevent arbitrary code execution from untrusted model files
+        model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
         model.to(self.device)
         model.eval()
 

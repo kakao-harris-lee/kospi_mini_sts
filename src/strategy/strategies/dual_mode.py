@@ -88,6 +88,7 @@ class DualModeConfig:
     triple_barrier_model_dir: str = "docker-training/models/triple_barrier"
     triple_barrier_threshold: float = 0.60  # Lowered confidence threshold (was 0.70)
     triple_barrier_buffer_size: int = 100  # Rolling OHLCV buffer size
+    triple_barrier_cache_bars: int = 3  # Cache prediction for N bars to reduce inference overhead
 
     # MODE_B: Trend settings (legacy - used as fallback)
     trend_dl_threshold: float = 0.60  # Lowered to 0.60~0.65 range
@@ -193,6 +194,10 @@ class DualModeStrategy(BaseStrategy):
         self._last_tb_signal: int = 0  # -1=SELL, 0=HOLD, 1=BUY
         self._last_tb_confidence: float = 0.0
         self._last_tb_probs: Dict[str, float] = {"buy": 0.0, "sell": 0.0, "hold": 1.0}
+
+        # Triple Barrier prediction cache (reduces inference from every bar to every N bars)
+        self._tb_cache_result: Optional[Dict[str, Any]] = None
+        self._tb_cache_bar_count: int = 0
 
     def _determine_mode(self, bar: BarData) -> TradingMode:
         """Determine trading mode based on current conditions with hysteresis."""
@@ -465,27 +470,47 @@ class DualModeStrategy(BaseStrategy):
         if tech is None or not tech.is_ready:
             return Signal.HOLD
 
-        # Step 1: Get Triple Barrier direction signal
+        # Step 1: Get Triple Barrier direction signal (with caching to reduce inference overhead)
         tb_signal = None
         tb_confidence = 0.0
         tb_probs = {}
 
         if self._triple_barrier is not None:
-            df = self._get_ohlcv_dataframe()
-            if df is not None:
-                try:
-                    result = self._triple_barrier.generate_signal(df)
-                    tb_signal = result["signal"]  # "BUY", "SELL", or "HOLD"
-                    tb_confidence = result["confidence"]
-                    tb_probs = result["probabilities"]
+            # Check if we can use cached prediction
+            self._tb_cache_bar_count += 1
+            use_cache = (
+                self._tb_cache_result is not None
+                and self._tb_cache_bar_count <= self.config.triple_barrier_cache_bars
+            )
 
-                    # Track TB state for metrics
-                    self._last_tb_signal = {"BUY": 1, "SELL": -1, "HOLD": 0}.get(tb_signal, 0)
-                    self._last_tb_confidence = tb_confidence
-                    self._last_tb_probs = tb_probs
-                except Exception as e:
-                    logger.warning(f"Triple barrier prediction failed: {e}")
-                    tb_signal = None
+            if use_cache:
+                # Use cached prediction (saves 15-70ms inference time)
+                tb_signal = self._tb_cache_result["signal"]
+                tb_confidence = self._tb_cache_result["confidence"]
+                tb_probs = self._tb_cache_result["probabilities"]
+                logger.debug(f"Using cached TB prediction: {tb_signal} (bar {self._tb_cache_bar_count}/{self.config.triple_barrier_cache_bars})")
+            else:
+                # Run fresh inference
+                df = self._get_ohlcv_dataframe()
+                if df is not None:
+                    try:
+                        result = self._triple_barrier.generate_signal(df)
+                        tb_signal = result["signal"]  # "BUY", "SELL", or "HOLD"
+                        tb_confidence = result["confidence"]
+                        tb_probs = result["probabilities"]
+
+                        # Cache the result
+                        self._tb_cache_result = result
+                        self._tb_cache_bar_count = 1
+
+                        # Track TB state for metrics
+                        self._last_tb_signal = {"BUY": 1, "SELL": -1, "HOLD": 0}.get(tb_signal, 0)
+                        self._last_tb_confidence = tb_confidence
+                        self._last_tb_probs = tb_probs
+                    except Exception as e:
+                        logger.warning(f"Triple barrier prediction failed: {e}")
+                        tb_signal = None
+                        self._tb_cache_result = None
 
         # If no Triple Barrier signal, fallback to legacy
         if tb_signal is None or tb_signal == "HOLD":
@@ -789,3 +814,6 @@ class DualModeStrategy(BaseStrategy):
                 self._stats[key] = 0
         if self._decision_logger:
             self._decision_logger.reset_daily_stats()
+        # Reset TB prediction cache
+        self._tb_cache_result = None
+        self._tb_cache_bar_count = 0
