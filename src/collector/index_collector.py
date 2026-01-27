@@ -2,7 +2,7 @@
 KOSPI200 Index Collector
 
 Subscribes to KOSPI200 index real-time data via KIS WebSocket.
-Publishes index values to INDEX_STREAM for basis calculation.
+Publishes index values to INDEX_STREAM for model training/backtests.
 """
 
 import json
@@ -51,7 +51,7 @@ class IndexCollector:
     KOSPI200 Index Real-time Collector
 
     Subscribes to KIS WebSocket for index data and publishes to Redis.
-    Used by ArbitrageEngine for basis calculation.
+    Used by model training/backtests that require index streams.
     """
 
     # KIS WebSocket tr_id for index
@@ -74,14 +74,14 @@ class IndexCollector:
             app_secret: KIS API app secret (default from settings)
             is_mock: Whether to use mock server
             index_symbol: Index symbol to subscribe (default: KOSPI200)
-            stream_name: Redis stream to publish (default from ArbitrageConfig)
+            stream_name: Redis stream to publish (default from IndexConfig)
         """
         self.app_key = app_key or settings.kis.app_key
         self.app_secret = app_secret or settings.kis.app_secret
         self.is_mock = is_mock or settings.kis.is_mock
 
-        self.index_symbol = index_symbol or settings.arbitrage.index_symbol
-        self.stream_name = stream_name or settings.arbitrage.index_stream
+        self.index_symbol = index_symbol or settings.index.index_symbol
+        self.stream_name = stream_name or settings.index.index_stream
 
         self._ws = None
         self._approval_key: Optional[str] = None
@@ -416,8 +416,8 @@ def create_index_collector_from_env() -> IndexCollector:
         app_key=settings.kis.app_key,
         app_secret=settings.kis.app_secret,
         is_mock=settings.kis.is_mock,
-        index_symbol=settings.arbitrage.index_symbol,
-        stream_name=settings.arbitrage.index_stream,
+        index_symbol=settings.index.index_symbol,
+        stream_name=settings.index.index_stream,
     )
 
 

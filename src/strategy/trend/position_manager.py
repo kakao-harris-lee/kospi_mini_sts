@@ -106,7 +106,7 @@ class TrendPositionManager:
         time_cut_minutes: int = 30,
         time_cut_atr_threshold: float = 0.5,
         stop_cooldown_minutes: int = 15,  # 15 min cooldown after stop-out
-        max_stop_points: float = 2.0,     # Maximum stop distance in points (risk cap)
+        max_stop_points: Optional[float] = None,  # Maximum stop distance in points (risk cap)
         take_profit_multiplier: float = 2.0,  # Take profit at 2x stop distance
     ):
         """
@@ -115,7 +115,7 @@ class TrendPositionManager:
             time_cut_minutes: Minutes before time cut check (default 30)
             time_cut_atr_threshold: Min favorable move as ATR multiple (default 0.5)
             stop_cooldown_minutes: Minutes to wait after stop-out before re-entry (default 10)
-            max_stop_points: Maximum stop distance in points to cap risk (default 2.0)
+            max_stop_points: Maximum stop distance in points to cap risk (default None)
             take_profit_multiplier: Take profit at this multiple of stop distance (default 2.0)
         """
         self.atr_stop_multiplier = atr_stop_multiplier
@@ -188,10 +188,13 @@ class TrendPositionManager:
             self.close_position(entry_price)
         position_side = PositionSide.LONG if side == "LONG" else PositionSide.SHORT
 
-        # Calculate initial stop with risk cap
+        # Calculate initial stop, optionally applying risk cap
         atr_stop_distance = self.atr_stop_multiplier * atr
-        # Cap stop distance to limit max loss per trade
-        stop_distance = min(atr_stop_distance, self.max_stop_points)
+        stop_distance = (
+            min(atr_stop_distance, self.max_stop_points)
+            if self.max_stop_points is not None
+            else atr_stop_distance
+        )
 
         # Calculate take profit target (multiple of stop distance)
         target_distance = stop_distance * self.take_profit_multiplier
@@ -276,7 +279,10 @@ class TrendPositionManager:
 
         # Check 1: Hard loss limit (circuit breaker for gaps)
         unrealized_loss = -unrealized_pnl
-        max_loss = self.max_stop_points * 1.5  # Allow 50% buffer over stop
+        cap = self.max_stop_points
+        if cap is None:
+            cap = self.atr_stop_multiplier * pos.atr_at_entry
+        max_loss = cap * 1.5  # Allow 50% buffer over stop
         if unrealized_loss > max_loss:
             return ExitSignal(
                 should_exit=True,
@@ -305,9 +311,13 @@ class TrendPositionManager:
         """Update trailing stop based on price movement."""
         pos = self._position
 
-        # Apply same max cap to trailing stop distance
+        # Apply same optional cap to trailing stop distance
         atr_stop_distance = self.atr_stop_multiplier * current_atr
-        stop_distance = min(atr_stop_distance, self.max_stop_points)
+        stop_distance = (
+            min(atr_stop_distance, self.max_stop_points)
+            if self.max_stop_points is not None
+            else atr_stop_distance
+        )
 
         if pos.is_long:
             # Update highest price

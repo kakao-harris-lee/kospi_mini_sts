@@ -3,7 +3,7 @@ Report Generator
 
 백테스트/모의투자 결과를 다양한 형식으로 출력
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -170,7 +170,7 @@ class ReportGenerator:
             lines.append("")
 
         lines.append("=" * 60)
-        lines.append(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"Generated at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
 
         return "\n".join(lines)
 
@@ -279,7 +279,7 @@ class ReportGenerator:
         html += f"""
     <div class="footer">
         Run ID: {run.id}<br>
-        Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}
     </div>
 </div>
 </body>
@@ -293,7 +293,7 @@ class ReportGenerator:
             'run': run.to_dict(),
             'trades': [t.to_dict() for t in trades],
             'daily_metrics': [m.to_dict() for m in daily_metrics],
-            'generated_at': datetime.now().isoformat(),
+            'generated_at': datetime.now(timezone.utc).isoformat(),
         }
         return json.dumps(data, indent=2, ensure_ascii=False, default=str)
 
@@ -338,7 +338,7 @@ class ReportGenerator:
             lines.append("")
 
         lines.append("---")
-        lines.append(f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        lines.append(f"*Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}*")
 
         return "\n".join(lines)
 

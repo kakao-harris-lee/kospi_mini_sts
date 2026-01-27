@@ -380,11 +380,6 @@ class DetailedTradingLogger:
                 f"[MODE AVOID] {ts_str} {symbol} | "
                 f"Low Liquidity: {liquidity_score:.1f} < threshold"
             )
-        elif mode == "MODE_A":
-            self.logger.info(
-                f"[MODE A] {ts_str} {symbol} | "
-                f"Arbitrage Mode | LIQ: {liquidity_score:.1f} | BASIS: {basis_gap:.2f}σ"
-            )
 
     def log_order_decision(
         self,

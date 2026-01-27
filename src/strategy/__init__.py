@@ -48,6 +48,7 @@ from .strategies import (
     PureMicroConfig,
     DualModeStrategy,
     DualModeConfig,
+    ModeBStrategy,
 )
 
 __all__ = [
@@ -85,4 +86,5 @@ __all__ = [
     "PureMicroConfig",
     "DualModeStrategy",
     "DualModeConfig",
+    "ModeBStrategy",
 ]

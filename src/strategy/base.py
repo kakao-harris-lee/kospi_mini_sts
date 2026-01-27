@@ -71,7 +71,7 @@ class BarData:
     # 변동성 레짐 (None = not yet determined, requires warm-up period)
     regime: Optional[str] = None
 
-    # Orderbook data for arbitrage (MODE_A)
+    # Orderbook data
     best_bid: float = 0.0
     best_ask: float = 0.0
     bid_qty1: float = 0.0
@@ -106,7 +106,7 @@ class BarData:
             up_prob_h5=data.get('up_prob_h5', 0.5),
             up_prob_h10=data.get('up_prob_h10', 0.5),
             regime=data.get('regime'),  # None if not provided (warm-up period)
-            # Orderbook data for arbitrage
+            # Orderbook data
             best_bid=data.get('best_bid', data.get('bid_price_1', 0)),
             best_ask=data.get('best_ask', data.get('ask_price_1', 0)),
             bid_qty1=data.get('bid_qty1', data.get('bid_qty_1', 0)),

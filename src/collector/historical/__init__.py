@@ -17,6 +17,8 @@ Historical Data Collection Module
 from .backfill import (
     backfill,
     collect_today,
+    backfill_kospi200_index,
+    collect_today_kospi200_index,
     backfill_kospi200f,
     collect_today_kospi200f,
 )
@@ -38,6 +40,9 @@ __all__ = [
     # Backfill functions (Mini Futures)
     "backfill",
     "collect_today",
+    # Backfill functions (KOSPI 200 Index)
+    "backfill_kospi200_index",
+    "collect_today_kospi200_index",
     # Backfill functions (KOSPI 200 Futures full-size)
     "backfill_kospi200f",
     "collect_today_kospi200f",

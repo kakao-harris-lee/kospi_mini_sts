@@ -407,7 +407,7 @@ class PaperTradingService:
             HybridStrategy,
             PureMicrostructureStrategy,
             AdaptiveMicrostructureStrategy,
-            DualModeStrategy,
+            ModeBStrategy,
         )
         from src.paper_trading import PaperTradingEngine, VirtualBroker
         from src.collector.kis_order import KISOrderAPI, KISOrderConfig, KISOrderExecutor
@@ -419,7 +419,7 @@ class PaperTradingService:
             "hybrid": HybridStrategy,
             "pure_micro": PureMicrostructureStrategy,
             "adaptive_micro": AdaptiveMicrostructureStrategy,
-            "dual_mode": DualModeStrategy,  # MODE_A + MODE_B with state machine
+            "dual_mode": ModeBStrategy,  # MODE_B only (trend + triple barrier)
         }
 
         strategy_instance = strategy_classes[self.strategy]()

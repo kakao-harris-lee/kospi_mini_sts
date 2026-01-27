@@ -437,7 +437,7 @@ MODEL_INFERENCE_LATENCY = Histogram(
 
 TRADING_MODE = Gauge(
     "trading_mode",
-    "Current trading mode (0=AVOID, 1=MODE_A, 2=MODE_B)",
+    "Current trading mode (0=AVOID, 1=MODE_B)",
     ["strategy"],
     registry=REGISTRY,
 )
@@ -816,7 +816,7 @@ class TradingMetrics:
     # -------------------------------------------------------------------------
 
     def set_trading_mode(self, strategy: str, mode: int):
-        """Set current trading mode (0=AVOID, 1=MODE_A, 2=MODE_B)"""
+        """Set current trading mode (0=AVOID, 1=MODE_B)"""
         TRADING_MODE.labels(strategy=strategy).set(mode)
 
     def set_active_engine(self, strategy: str, engine: str, active: bool):

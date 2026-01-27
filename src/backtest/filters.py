@@ -3,11 +3,13 @@
 노이즈 구간, 점심 시간, 이벤트 직전 등 거래 제외 시간 관리
 """
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timezone, timedelta
 from typing import List, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
+
+KST = timezone(timedelta(hours=9))
 
 
 @dataclass
@@ -58,6 +60,12 @@ class TradingHoursFilter:
         self.event_blackouts.append((start, end))
         logger.info(f"Added event blackout: {start} ~ {end}")
 
+    def _normalize_dt(self, dt: datetime) -> datetime:
+        """Normalize datetime to naive KST for trading-hour checks."""
+        if dt.tzinfo is None:
+            return dt
+        return dt.astimezone(KST).replace(tzinfo=None)
+
     def is_trading_hours(self, dt: datetime) -> bool:
         """
         거래 가능 시간인지 확인 (장 시간 내)
@@ -68,6 +76,7 @@ class TradingHoursFilter:
         Returns:
             장 시간 내 여부
         """
+        dt = self._normalize_dt(dt)
         t = dt.time()
         return self.config.market_open <= t < self.config.market_close
 
@@ -89,6 +98,7 @@ class TradingHoursFilter:
         Returns:
             진입 가능 여부
         """
+        dt = self._normalize_dt(dt)
         t = dt.time()
 
         # 1. 장 시간 체크
@@ -132,6 +142,7 @@ class TradingHoursFilter:
         Returns:
             강제 청산 필요 여부
         """
+        dt = self._normalize_dt(dt)
         t = dt.time()
         return t >= self.config.force_close
 
@@ -145,6 +156,7 @@ class TradingHoursFilter:
         Returns:
             제외 사유 또는 None (거래 가능 시)
         """
+        dt = self._normalize_dt(dt)
         t = dt.time()
 
         if not self.is_trading_hours(dt):

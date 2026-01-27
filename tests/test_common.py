@@ -355,21 +355,21 @@ class TestFuturesCode:
         """근월물 코드 조회 테스트"""
         from src.common.futures_code import get_front_month_code
 
-        # 2025년 1월 1일 기준 -> 3월물 (101H25)
+        # 2025년 1월 1일 기준 -> 1월물 (101F25)
         code = get_front_month_code(date(2025, 1, 1))
-        assert code == "101H25"
+        assert code == "101F25"
 
-        # 2025년 3월 14일 (만기일 이후) -> 6월물 (101M25)
+        # 2025년 3월 14일 (만기일 이후) -> 4월물 (101J25)
         code = get_front_month_code(date(2025, 3, 14))
-        assert code == "101M25"
+        assert code == "101J25"
 
     def test_get_back_month_code(self):
         """차월물 코드 조회 테스트"""
         from src.common.futures_code import get_back_month_code
 
-        # 2025년 1월 1일 기준 -> 6월물 (101M25)
+        # 2025년 1월 1일 기준 -> 2월물 (101G25)
         code = get_back_month_code(date(2025, 1, 1))
-        assert code == "101M25"
+        assert code == "101G25"
 
     def test_get_kis_code(self):
         """KIS 약식 코드 조회 테스트"""
@@ -406,15 +406,15 @@ class TestFuturesCode:
 
         assert "front_month" in info
         assert "back_month" in info
-        assert info["front_month"]["krx_code"] == "101H25"
+        assert info["front_month"]["krx_code"] == "101F25"
         assert info["front_month"]["kis_code"] == "A05601"
         assert info["front_month"]["days_to_expiry"] > 0
 
     def test_quarterly_months(self):
-        """분기물 월 확인 테스트"""
-        from src.common.futures_code import QUARTERLY_MONTHS
+        """월물 월 확인 테스트"""
+        from src.common.futures_code import MONTHLY_CONTRACTS
 
-        assert QUARTERLY_MONTHS == [3, 6, 9, 12]
+        assert MONTHLY_CONTRACTS == list(range(1, 13))
 
     def test_month_codes_mapping(self):
         """월 코드 매핑 테스트"""

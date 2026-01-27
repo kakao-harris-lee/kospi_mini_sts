@@ -93,37 +93,6 @@ class TestIntegration:
         
         assert high_liq > low_liq
     
-    def test_strategy_mode_selection(self):
-        """전략 모드 선택 테스트"""
-        from src.strategy import StrategyManager, TradingMode
-        
-        executor = DryRunOrderExecutor()
-        manager = StrategyManager(order_executor=executor)
-        
-        # Mode A 조건 (유동성↑, 괴리↑)
-        mode_a = manager._determine_mode(
-            liquidity_score=90,
-            basis_gap=3.0,
-            up_prob=0.7
-        )
-        assert mode_a == TradingMode.MODE_A
-        
-        # Mode B 조건 (일반)
-        mode_b = manager._determine_mode(
-            liquidity_score=60,
-            basis_gap=0.5,
-            up_prob=0.9
-        )
-        assert mode_b == TradingMode.MODE_B
-        
-        # Avoid 조건 (유동성↓)
-        avoid = manager._determine_mode(
-            liquidity_score=30,
-            basis_gap=0.5,
-            up_prob=0.9
-        )
-        assert avoid == TradingMode.AVOID
-
 
 class TestStreamConsumer:
     """Stream Consumer 테스트"""

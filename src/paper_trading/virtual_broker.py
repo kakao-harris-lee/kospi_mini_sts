@@ -7,7 +7,7 @@ Virtual Broker - 가상 주문 실행기
 - 포지션 관리: 진입/청산 추적
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Callable
 import uuid
@@ -47,7 +47,7 @@ class VirtualOrder:
     price: float = 0.0  # 지정가일 때만 사용
     quantity: int = 1
     status: OrderStatus = OrderStatus.PENDING
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     filled_at: Optional[datetime] = None
     filled_price: float = 0.0
     commission: float = 0.0
@@ -97,7 +97,7 @@ class VirtualPosition:
 class TradeRecord:
     """거래 기록"""
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    entry_time: datetime = field(default_factory=datetime.now)
+    entry_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     exit_time: Optional[datetime] = None
     side: PositionSide = PositionSide.LONG
     entry_price: float = 0.0
@@ -249,7 +249,7 @@ class VirtualBroker:
 
         # 주문 업데이트
         order.status = OrderStatus.FILLED
-        order.filled_at = datetime.now()
+        order.filled_at = datetime.now(timezone.utc)
         order.filled_price = fill_price
         order.commission = commission
         order.slippage = slippage * order.quantity
@@ -363,7 +363,7 @@ class VirtualBroker:
         commission = notional * self.commission_rate
 
         order.status = OrderStatus.FILLED
-        order.filled_at = datetime.now()
+        order.filled_at = datetime.now(timezone.utc)
         order.commission = commission
 
         self.filled_orders.append(order)

@@ -18,7 +18,7 @@ __all__ = [
     "TickDataCollector",
     "TickCollectorConfig",
     "get_current_futures_code",
-    # 지수 수집기 (MODE_A Arbitrage)
+    # 인덱스 수집기
     "IndexCollector",
     "IndexData",
     "MockIndexCollector",

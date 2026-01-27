@@ -15,7 +15,7 @@ import asyncio
 import logging
 import math
 from collections import deque
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional, Dict, List, Deque
 
 from src.common.metrics import get_metrics
@@ -217,7 +217,7 @@ class PerformanceTracker:
         metric.sharpe_ratio = self._calculate_sharpe_ratio(trades, strategy)
 
         # Update timestamp
-        metric.datetime = datetime.utcnow()
+        metric.datetime = datetime.now(timezone.utc)
 
         # Update Prometheus metrics
         self._update_prometheus_metrics(metric)
@@ -334,7 +334,7 @@ class PerformanceTracker:
                 strategy=metric.strategy,
                 symbol=metric.symbol,
                 period=metric.period,
-                datetime=datetime.utcnow(),
+                datetime=datetime.now(timezone.utc),
                 total_pnl=metric.total_pnl,
                 realized_pnl=metric.realized_pnl,
                 unrealized_pnl=metric.unrealized_pnl,

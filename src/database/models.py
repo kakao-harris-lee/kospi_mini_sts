@@ -3,7 +3,7 @@ SQLite 데이터베이스 모델 (SQLAlchemy ORM)
 
 백테스트/모의투자 실행 결과 저장
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List
 import json
@@ -60,7 +60,7 @@ class Run(Base):
     sortino_ratio = Column(Float, default=0.0)
 
     # 메타데이터
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     notes = Column(Text, default='')
 
     # 관계

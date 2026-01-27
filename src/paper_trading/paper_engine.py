@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Callable
 
 from config.settings import settings
@@ -68,7 +68,7 @@ class KISOrderBridge:
             )
 
             self.orders.append({
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'side': side,
                 'quantity': quantity,
                 'price': price,
@@ -122,7 +122,7 @@ class PaperTradingEngine:
             broker.symbol = symbol
         self.redis = redis_client
         self.feature_stream = feature_stream
-        self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.symbol = symbol
 
         # KIS 주문 브릿지
@@ -184,7 +184,7 @@ class PaperTradingEngine:
             return
 
         self.is_running = True
-        self.start_time = datetime.now()
+        self.start_time = datetime.now(timezone.utc)
         logger.info(f"Paper Trading started at {self.start_time}")
 
         try:
@@ -203,7 +203,7 @@ class PaperTradingEngine:
             logger.info("Paper Trading cancelled")
         finally:
             self.is_running = False
-            self.end_time = datetime.now()
+            self.end_time = datetime.now(timezone.utc)
             await self._cleanup()
 
     async def stop(self):
@@ -270,7 +270,7 @@ class PaperTradingEngine:
             # 가상 데이터 생성
             price = base_price + random.uniform(-2, 2)
             data = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "code": "101M25",
                 "close": str(price),
                 "bid": str(price - 0.05),
@@ -331,24 +331,27 @@ class PaperTradingEngine:
 
             def to_datetime(v):
                 if v is None:
-                    return datetime.now()
+                    return datetime.now(timezone.utc)
                 if isinstance(v, datetime):
+                    if v.tzinfo is None:
+                        return v.replace(tzinfo=timezone.utc)
                     return v
                 if isinstance(v, bytes):
                     v = v.decode()
                 if isinstance(v, str):
                     # Handle ISO format with or without timezone
                     try:
-                        return datetime.fromisoformat(v.replace('Z', '+00:00'))
+                        parsed = datetime.fromisoformat(v.replace('Z', '+00:00'))
+                        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
                     except ValueError:
                         # Try parsing as Unix timestamp
                         try:
-                            return datetime.fromtimestamp(float(v))
+                            return datetime.fromtimestamp(float(v), tz=timezone.utc)
                         except ValueError:
-                            return datetime.now()
+                            return datetime.now(timezone.utc)
                 if isinstance(v, (int, float)):
-                    return datetime.fromtimestamp(v)
-                return datetime.now()
+                    return datetime.fromtimestamp(v, tz=timezone.utc)
+                return datetime.now(timezone.utc)
 
             # Price fallback chain: close → current_price → mid_price
             mid_price = to_float(get('mid_price', 0))
@@ -478,7 +481,7 @@ class PaperTradingEngine:
 
             # Create decision log for close
             decision = DecisionLog(
-                timestamp=trade.exit_time or datetime.now(),
+                timestamp=trade.exit_time or datetime.now(timezone.utc),
                 signal="CLOSE",
                 price=trade.exit_price,
                 mode=self.strategy.get_mode_name() if hasattr(self.strategy, 'get_mode_name') else "unknown",
@@ -498,7 +501,7 @@ class PaperTradingEngine:
     def _record_equity(self):
         """자산 기록"""
         self.equity_history.append({
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'equity': self.broker.equity,
             'capital': self.broker.capital,
             'unrealized_pnl': self.broker.position.unrealized_pnl,
@@ -597,7 +600,7 @@ async def run_paper_trading(
         HybridStrategy,
         PureMicrostructureStrategy,
         AdaptiveMicrostructureStrategy,
-        DualModeStrategy,
+        ModeBStrategy,
     )
 
     strategy_classes = {
@@ -607,7 +610,8 @@ async def run_paper_trading(
         "hybrid": HybridStrategy,
         "pure_micro": PureMicrostructureStrategy,
         "adaptive_micro": AdaptiveMicrostructureStrategy,
-        "dual_mode": DualModeStrategy,
+        "mode_b": ModeBStrategy,
+        "dual_mode": ModeBStrategy,
     }
 
     if strategy_name not in strategy_classes:

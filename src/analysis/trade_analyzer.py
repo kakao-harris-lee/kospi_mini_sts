@@ -20,7 +20,7 @@ Usage:
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -156,7 +156,7 @@ class TradeAnalyzer:
             Total number of decisions loaded
         """
         total = 0
-        today = datetime.now().date()
+        today = datetime.now(timezone.utc).date()
         for i in range(days):
             d = today - pd.Timedelta(days=i)
             total += self.load_date(d.strftime("%Y-%m-%d"))

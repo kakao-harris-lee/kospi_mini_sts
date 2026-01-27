@@ -13,7 +13,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -30,7 +30,7 @@ class DecisionLog:
     timestamp: datetime
     signal: str  # BUY, SELL, CLOSE
     price: float
-    mode: str  # MODE_A, MODE_B
+    mode: str  # MODE_B
     reason: str
 
     # DL Probabilities
@@ -104,7 +104,7 @@ class DecisionLogger:
             enable_clickhouse: Write to ClickHouse
             telegram_cooldown: Minimum seconds between Telegram messages
         """
-        self.session_id = session_id or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.session_id = session_id or f"session_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -154,7 +154,7 @@ class DecisionLogger:
 
     def generate_trade_id(self) -> str:
         """Generate unique trade ID."""
-        return f"t_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        return f"t_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
     def log_entry(self, decision: DecisionLog) -> None:
         """
@@ -240,7 +240,7 @@ class DecisionLogger:
     def log_mode_change(self, prev_mode: str, new_mode: str, bar_data: Dict[str, Any]) -> None:
         """Log a mode change event."""
         decision = DecisionLog(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             signal="MODE_CHANGE",
             price=bar_data.get('close', 0.0),
             mode=new_mode,

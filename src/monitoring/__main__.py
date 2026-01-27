@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import typer
 
@@ -180,7 +180,7 @@ async def _run_service(
 - Data Collection Tracker: 60s interval
 - Model Training Tracker: 30s interval
 
-<i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>""",
+<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}</i>""",
         priority="normal",
     )
 
@@ -197,7 +197,7 @@ async def _run_service(
         await alert_service.send_immediate(
             alert_type=AlertType.SYSTEM_STOP,
             title="Monitoring Service Stopped",
-            message=f"Monitoring service shutting down.\n\n<i>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>",
+            message=f"Monitoring service shutting down.\n\n<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}</i>",
             priority="normal",
         )
 

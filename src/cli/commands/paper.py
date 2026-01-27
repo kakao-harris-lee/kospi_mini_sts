@@ -26,7 +26,8 @@ STRATEGY_MAP = {
     "hybrid": "HybridStrategy",
     "pure_micro": "PureMicrostructureStrategy",
     "adaptive_micro": "AdaptiveMicrostructureStrategy",
-    "dual_mode": "DualModeStrategy",
+    "mode_b": "ModeBStrategy",
+    "dual_mode": "ModeBStrategy",
 }
 
 
@@ -49,7 +50,7 @@ def run_paper_trading(
     strategy: str = typer.Option(
         "hybrid",
         "--strategy", "-s",
-        help="전략 이름 (mean_reversion, breakout, ofi_momentum, hybrid)",
+        help="전략 이름 (mean_reversion, breakout, ofi_momentum, hybrid, mode_b)",
     ),
     duration: str = typer.Option(
         "1h",
@@ -131,7 +132,7 @@ async def _run_paper_trading_async(
         HybridStrategy,
         PureMicrostructureStrategy,
         AdaptiveMicrostructureStrategy,
-        DualModeStrategy,
+        ModeBStrategy,
     )
     from src.paper_trading import PaperTradingEngine, VirtualBroker
 
@@ -142,7 +143,8 @@ async def _run_paper_trading_async(
         "hybrid": HybridStrategy,
         "pure_micro": PureMicrostructureStrategy,
         "adaptive_micro": AdaptiveMicrostructureStrategy,
-        "dual_mode": DualModeStrategy,
+        "mode_b": ModeBStrategy,
+        "dual_mode": ModeBStrategy,
     }
 
     strategy = strategy_classes[strategy_name]()
@@ -215,16 +217,22 @@ def _save_to_db(result: dict, strategy: str, capital: float):
     """결과를 DB에 저장"""
     try:
         from src.database import ResultRepository
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         repo = ResultRepository()
 
         # Run 생성
+        def _parse_dt(value: Optional[str]) -> datetime:
+            if not value:
+                return datetime.now(timezone.utc)
+            parsed = datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
         run = repo.create_run(
             strategy=strategy,
             mode="paper",
-            start_date=datetime.fromisoformat(result['start_time']) if result['start_time'] else datetime.now(),
-            end_date=datetime.fromisoformat(result['end_time']) if result['end_time'] else datetime.now(),
+            start_date=_parse_dt(result.get('start_time')),
+            end_date=_parse_dt(result.get('end_time')),
             config={
                 'duration_seconds': result['duration_seconds'],
                 'bars_processed': result['bars_processed'],
@@ -249,8 +257,8 @@ def _save_to_db(result: dict, strategy: str, capital: float):
         # 거래 기록 저장
         trades_data = [
             {
-                'entry_time': datetime.fromisoformat(t['entry_time']),
-                'exit_time': datetime.fromisoformat(t['exit_time']) if t['exit_time'] else None,
+                'entry_time': _parse_dt(t.get('entry_time')),
+                'exit_time': _parse_dt(t.get('exit_time')) if t.get('exit_time') else None,
                 'side': t['side'],
                 'entry_price': t['entry_price'],
                 'exit_price': t['exit_price'],

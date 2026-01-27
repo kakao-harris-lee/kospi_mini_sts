@@ -12,7 +12,7 @@ Constitution Compliance:
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from src.common.metrics import get_metrics
@@ -234,7 +234,7 @@ class TradeNotifier:
             message += loss_warning
 
         # Add timestamp
-        message += f"\n\n<i>{datetime.now().strftime('%H:%M:%S')}</i>"
+        message += f"\n\n<i>{datetime.now(timezone.utc).strftime('%H:%M:%S')}</i>"
 
         return message
 
@@ -356,7 +356,7 @@ class TradeNotifier:
 <b>총 거래:</b> {stats['trade_count']}회
 <b>최대 연속손실:</b> {stats['loss_streak']}회
 
-<i>{datetime.now().strftime('%Y-%m-%d %H:%M')}</i>"""
+<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}</i>"""
 
         return await self.alert_service.send_immediate(
             alert_type=AlertType.DAILY_SUMMARY,

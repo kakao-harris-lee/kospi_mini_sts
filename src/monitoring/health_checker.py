@@ -13,7 +13,7 @@ Constitution Compliance:
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List, Callable, Awaitable
 
 from src.common.metrics import get_metrics
@@ -305,7 +305,7 @@ class HealthChecker:
                 # Without Redis, mark as unknown/degraded
                 health.status = HealthStatus.DEGRADED
                 health.error = "Cannot check: Redis not available"
-                health.last_check = datetime.utcnow()
+                health.last_check = datetime.now(timezone.utc)
 
             results.append(health)
 

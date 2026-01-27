@@ -17,7 +17,7 @@ import sys
 import time
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from threading import Thread
@@ -213,7 +213,7 @@ class TickDataCollector:
             self._candle_states[symbol] = CandleState()
 
         state = self._candle_states[symbol]
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         current_minute = now.hour * 60 + now.minute
 
         # 새 캔들 시작 또는 분 변경 시 기존 캔들 저장
@@ -241,7 +241,7 @@ class TickDataCollector:
 
         try:
             # 캔들 시작 시간 계산
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             candle_dt = now.replace(
                 hour=state.candle_start_minute // 60,
                 minute=state.candle_start_minute % 60,
@@ -357,7 +357,7 @@ def get_current_futures_code() -> str:
         7: 'N', 8: 'Q', 9: 'U', 10: 'V', 11: 'X', 12: 'Z'
     }
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     year = now.year % 100
     month = now.month
 

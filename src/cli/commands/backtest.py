@@ -25,8 +25,10 @@ STRATEGY_MAP = {
     "hybrid": "HybridStrategy",
     "pure_micro": "PureMicrostructureStrategy",
     "adaptive_micro": "AdaptiveMicrostructureStrategy",
-    "dual_mode": "DualModeStrategy",
+    "mode_b": "ModeBStrategy",
+    "dual_mode": "ModeBStrategy",
 }
+
 
 
 def parse_date(date_str: str) -> date:
@@ -90,7 +92,7 @@ def run_backtest(
     strategy: str = typer.Option(
         "pure_micro",
         "--strategy", "-s",
-        help="전략 이름 (pure_micro, adaptive_micro, mean_reversion, breakout, ofi_momentum, hybrid)",
+        help="전략 이름 (pure_micro, adaptive_micro, mean_reversion, breakout, ofi_momentum, hybrid, mode_b)",
     ),
     start: str = typer.Option(
         ...,
@@ -177,7 +179,7 @@ def run_backtest(
             HybridStrategy,
             PureMicrostructureStrategy,
             AdaptiveMicrostructureStrategy,
-            DualModeStrategy,
+            ModeBStrategy,
         )
         from src.database import ResultRepository
 
@@ -191,8 +193,8 @@ def run_backtest(
             engineer = FeatureEngineer(FeatureConfig())
             df = engineer.transform(df)
 
-        # DL 예측 추가 (dual_mode 전략용)
-        if strategy == "dual_mode":
+        # DL 예측 추가 (MODE_B 전략용)
+        if strategy in ("dual_mode", "mode_b"):
             # Try ensemble first, fall back to single model
             from pathlib import Path
             ensemble_dir = Path("models/ensemble")
@@ -225,13 +227,14 @@ def run_backtest(
             "hybrid": HybridStrategy,
             "pure_micro": PureMicrostructureStrategy,
             "adaptive_micro": AdaptiveMicrostructureStrategy,
-            "dual_mode": DualModeStrategy,
+            "mode_b": ModeBStrategy,
+            "dual_mode": ModeBStrategy,
         }
         strategy_instance = strategy_classes[strategy]()
         adapter = StrategyAdapter(strategy_instance)
 
         # 백테스트 설정
-        # Note: For dual_mode, the strategy has its own ATR-based stop management
+        # Note: For MODE_B, the strategy has its own ATR-based stop management
         # so we use wider limits here to let the strategy's logic work
         config = BacktestConfig(
             initial_capital=capital,

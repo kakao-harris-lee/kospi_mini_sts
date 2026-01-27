@@ -10,7 +10,7 @@ from .pure_microstructure import (
     AdaptiveMicrostructureStrategy,
     PureMicroConfig,
 )
-from .dual_mode import DualModeStrategy, DualModeConfig
+from .dual_mode import DualModeStrategy, DualModeConfig, ModeBStrategy
 
 __all__ = [
     'MeanReversionStrategy',
@@ -21,5 +21,6 @@ __all__ = [
     'AdaptiveMicrostructureStrategy',
     'PureMicroConfig',
     'DualModeStrategy',
+    'ModeBStrategy',
     'DualModeConfig',
 ]

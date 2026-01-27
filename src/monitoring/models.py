@@ -12,7 +12,7 @@ This module defines all dataclasses and enums used by the monitoring system:
 
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Optional, Literal
@@ -89,7 +89,7 @@ class Alert:
     title: str
     message: str
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     delivery_status: DeliveryStatus = DeliveryStatus.PENDING
     delivered_at: Optional[datetime] = None
     retry_count: int = 0
@@ -139,7 +139,7 @@ class Alert:
     def mark_sent(self) -> None:
         """Mark alert as successfully delivered."""
         self.delivery_status = DeliveryStatus.SENT
-        self.delivered_at = datetime.utcnow()
+        self.delivered_at = datetime.now(timezone.utc)
 
     def mark_failed(self, error: str) -> None:
         """Mark alert as failed with error message."""
@@ -179,7 +179,7 @@ class TradeExecution:
     strategy: str
     order_type: Literal["MARKET", "LIMIT"] = "MARKET"
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     realized_pnl: float = 0.0
     commission: float = 0.0
     slippage: float = 0.0
@@ -246,7 +246,7 @@ class ServiceHealth:
     """
     service: str
     status: HealthStatus = HealthStatus.HEALTHY
-    last_check: datetime = field(default_factory=datetime.utcnow)
+    last_check: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     latency_ms: Optional[float] = None
     error: Optional[str] = None
     consecutive_failures: int = 0
@@ -272,14 +272,14 @@ class ServiceHealth:
         """Record a successful health check."""
         self.status = HealthStatus.HEALTHY
         self.latency_ms = latency_ms
-        self.last_check = datetime.utcnow()
+        self.last_check = datetime.now(timezone.utc)
         self.consecutive_failures = 0
         self.error = None
 
     def record_failure(self, error: str) -> None:
         """Record a failed health check."""
         self.consecutive_failures += 1
-        self.last_check = datetime.utcnow()
+        self.last_check = datetime.now(timezone.utc)
         self.error = error
 
         if self.consecutive_failures >= 3:
@@ -324,7 +324,7 @@ class PerformanceMetric:
     symbol: str
     period: Literal["minute", "hour", "day"]
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    datetime: datetime = field(default_factory=datetime.utcnow)
+    datetime: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     total_pnl: float = 0.0
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
@@ -399,7 +399,7 @@ class Anomaly:
     description: str
     recommended_action: str
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     acknowledged: bool = False
     acknowledged_at: Optional[datetime] = None
 
@@ -429,4 +429,4 @@ class Anomaly:
     def acknowledge(self) -> None:
         """Mark anomaly as acknowledged."""
         self.acknowledged = True
-        self.acknowledged_at = datetime.utcnow()
+        self.acknowledged_at = datetime.now(timezone.utc)

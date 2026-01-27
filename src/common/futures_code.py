@@ -1,12 +1,12 @@
 """
 선물 코드 자동 감지 모듈
 
-코스피200 미니선물 근월물/차월물 코드를 자동으로 계산합니다.
+코스피200 선물 근월물/차월물 코드를 자동으로 계산합니다.
 
 사용법:
     from src.common.futures_code import get_front_month_code, get_kis_code
 
-    # KRX 표준 코드 (101H25)
+    # KRX 표준 코드 (101F25)
     front_code = get_front_month_code()
 
     # KIS API 약식 코드 (A05601)
@@ -24,9 +24,10 @@ MONTH_CODES = {
     7: 'N', 8: 'Q', 9: 'U', 10: 'V', 11: 'X', 12: 'Z'
 }
 
-# 미니선물 결제월 (매월 - 미니선물은 분기물이 아닌 월물)
-# 참고: 일반 KOSPI200 선물은 분기물(3,6,9,12)이지만, 미니선물은 매월 만기
-MONTHLY_CONTRACTS = list(range(1, 13))  # 1~12월 모두
+# 미니선물 결제월 (매월 만기)
+MONTHLY_CONTRACTS = list(range(1, 13))
+# 분기물 결제월 (3, 6, 9, 12) - full-size 참고용
+QUARTERLY_MONTHS = [3, 6, 9, 12]
 
 # KIS API 약식 코드 (KOSPI Mini Futures)
 KIS_CODES = {
@@ -78,7 +79,7 @@ def get_second_thursday(year: int, month: int) -> date:
 
 
 def get_monthly_contracts_for_year(year: int) -> list:
-    """해당 연도의 월물 만기 정보 반환 (미니선물은 매월 만기)"""
+    """해당 연도의 월물 만기 정보 반환"""
     result = []
     for month in MONTHLY_CONTRACTS:
         expiry = get_second_thursday(year, month)
@@ -102,7 +103,7 @@ def get_front_month_info(as_of: date = None) -> dict:
     근월물 정보 반환
 
     :param as_of: 기준일 (기본: 오늘)
-    :return: {'year': 2025, 'month': 3, 'expiry': date, 'code': '101H25'}
+    :return: {'year': 2025, 'month': 1, 'expiry': date, 'code': '101F25'}
     """
     if as_of is None:
         as_of = date.today()
@@ -126,7 +127,7 @@ def get_back_month_info(as_of: date = None) -> dict:
     차월물 정보 반환
 
     :param as_of: 기준일 (기본: 오늘)
-    :return: {'year': 2025, 'month': 6, 'expiry': date, 'code': '101M25'}
+    :return: {'year': 2025, 'month': 2, 'expiry': date, 'code': '101G25'}
     """
     if as_of is None:
         as_of = date.today()
@@ -155,7 +156,7 @@ def get_front_month_code(as_of: date = None) -> str:
     근월물 KRX 코드 반환
 
     :param as_of: 기준일
-    :return: '101H25' 형식
+    :return: '101F25' 형식
     """
     return get_front_month_info(as_of)['code']
 
@@ -165,7 +166,7 @@ def get_back_month_code(as_of: date = None) -> str:
     차월물 KRX 코드 반환
 
     :param as_of: 기준일
-    :return: '101M25' 형식
+    :return: '101G25' 형식
     """
     return get_back_month_info(as_of)['code']
 
@@ -218,7 +219,7 @@ def is_valid_futures_code(code: str, as_of: date = None) -> bool:
     """
     유효한 선물 코드인지 확인 (만기되지 않은 월물)
 
-    :param code: KRX 코드 (예: '101H25')
+    :param code: KRX 코드 (예: '101F25')
     :param as_of: 기준일
     :return: 유효 여부
     """
