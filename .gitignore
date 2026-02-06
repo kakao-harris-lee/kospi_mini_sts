@@ -57,6 +57,7 @@ secrets.json
 .specify/
 docker-training/.claude/
 docker-training/.specify/
+docker-training/models/triple_barrier/
 specs/
 
 .serena/
