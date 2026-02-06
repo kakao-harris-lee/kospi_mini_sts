@@ -230,6 +230,10 @@ class PaperTradingService:
         use_kis_api: bool = True,
         enable_summary_alerts: bool = True,
     ):
+        if strategy in ("mode_b", "dual_mode"):
+            logger.warning("Strategy '%s' is deprecated; using 'trend_confirmed'.", strategy)
+            strategy = "trend_confirmed"
+
         self.strategy = strategy
         self.capital = capital
         self.simulation = simulation
@@ -407,7 +411,7 @@ class PaperTradingService:
             HybridStrategy,
             PureMicrostructureStrategy,
             AdaptiveMicrostructureStrategy,
-            ModeBStrategy,
+            TrendConfirmedStrategy,
         )
         from src.paper_trading import PaperTradingEngine, VirtualBroker
         from src.collector.kis_order import KISOrderAPI, KISOrderConfig, KISOrderExecutor
@@ -419,7 +423,7 @@ class PaperTradingService:
             "hybrid": HybridStrategy,
             "pure_micro": PureMicrostructureStrategy,
             "adaptive_micro": AdaptiveMicrostructureStrategy,
-            "dual_mode": ModeBStrategy,  # MODE_B only (trend + triple barrier)
+            "trend_confirmed": TrendConfirmedStrategy,
         }
 
         strategy_instance = strategy_classes[self.strategy]()
@@ -655,7 +659,7 @@ def main():
     parser.add_argument(
         "-s", "--strategy",
         default="pure_micro",
-        help="전략 이름 (기본: pure_micro)"
+        help="전략 이름 (pure_micro, adaptive_micro, mean_reversion, breakout, ofi_momentum, hybrid, trend_confirmed)"
     )
     parser.add_argument(
         "-c", "--capital",

@@ -26,8 +26,7 @@ STRATEGY_MAP = {
     "hybrid": "HybridStrategy",
     "pure_micro": "PureMicrostructureStrategy",
     "adaptive_micro": "AdaptiveMicrostructureStrategy",
-    "mode_b": "ModeBStrategy",
-    "dual_mode": "ModeBStrategy",
+    "trend_confirmed": "TrendConfirmedStrategy",
 }
 
 
@@ -50,7 +49,7 @@ def run_paper_trading(
     strategy: str = typer.Option(
         "hybrid",
         "--strategy", "-s",
-        help="전략 이름 (mean_reversion, breakout, ofi_momentum, hybrid, mode_b)",
+        help="전략 이름 (mean_reversion, breakout, ofi_momentum, hybrid, trend_confirmed)",
     ),
     duration: str = typer.Option(
         "1h",
@@ -74,6 +73,10 @@ def run_paper_trading(
     ),
 ):
     """Paper Trading 실행"""
+    if strategy in ("mode_b", "dual_mode"):
+        console.print("[yellow]Strategy 'mode_b' is deprecated; using 'trend_confirmed'.[/yellow]")
+        strategy = "trend_confirmed"
+
     if strategy not in STRATEGY_MAP:
         console.print(f"[red]Error:[/red] Unknown strategy '{strategy}'")
         console.print(f"Available: {', '.join(STRATEGY_MAP.keys())}")
@@ -132,7 +135,7 @@ async def _run_paper_trading_async(
         HybridStrategy,
         PureMicrostructureStrategy,
         AdaptiveMicrostructureStrategy,
-        ModeBStrategy,
+        TrendConfirmedStrategy,
     )
     from src.paper_trading import PaperTradingEngine, VirtualBroker
 
@@ -143,9 +146,12 @@ async def _run_paper_trading_async(
         "hybrid": HybridStrategy,
         "pure_micro": PureMicrostructureStrategy,
         "adaptive_micro": AdaptiveMicrostructureStrategy,
-        "mode_b": ModeBStrategy,
-        "dual_mode": ModeBStrategy,
+        "trend_confirmed": TrendConfirmedStrategy,
     }
+
+    if strategy_name in ("mode_b", "dual_mode"):
+        console.print("[yellow]Strategy 'mode_b' is deprecated; using 'trend_confirmed'.[/yellow]")
+        strategy_name = "trend_confirmed"
 
     strategy = strategy_classes[strategy_name]()
     broker = VirtualBroker(initial_capital=initial_capital)

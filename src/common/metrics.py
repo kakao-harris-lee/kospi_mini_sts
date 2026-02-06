@@ -432,12 +432,12 @@ MODEL_INFERENCE_LATENCY = Histogram(
 )
 
 # -----------------------------------------------------------------------------
-# Trading Mode Metrics (DualMode Strategy)
+# Trading Mode Metrics (Trend Confirmed Strategy)
 # -----------------------------------------------------------------------------
 
 TRADING_MODE = Gauge(
     "trading_mode",
-    "Current trading mode (0=AVOID, 1=MODE_B)",
+    "Current trading mode (0=AVOID, 1=TREND_CONFIRMED)",
     ["strategy"],
     registry=REGISTRY,
 )
@@ -812,11 +812,11 @@ class TradingMetrics:
         MODEL_INFERENCE_LATENCY.labels(model_type=model_type).observe(latency_ms)
 
     # -------------------------------------------------------------------------
-    # Trading Mode 메트릭 메서드 (DualMode Strategy)
+    # Trading Mode 메트릭 메서드 (Trend Confirmed Strategy)
     # -------------------------------------------------------------------------
 
     def set_trading_mode(self, strategy: str, mode: int):
-        """Set current trading mode (0=AVOID, 1=MODE_B)"""
+        """Set current trading mode (0=AVOID, 1=TREND_CONFIRMED)"""
         TRADING_MODE.labels(strategy=strategy).set(mode)
 
     def set_active_engine(self, strategy: str, engine: str, active: bool):

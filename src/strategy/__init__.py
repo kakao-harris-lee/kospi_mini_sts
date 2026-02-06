@@ -8,7 +8,6 @@ Strategy 패키지
 """
 from .strategy_manager import (
     StrategyManager,
-    TradingMode,
     OrderCommand,
     OrderSide,
     OrderType,
@@ -46,15 +45,13 @@ from .strategies import (
     PureMicrostructureStrategy,
     AdaptiveMicrostructureStrategy,
     PureMicroConfig,
-    DualModeStrategy,
-    DualModeConfig,
-    ModeBStrategy,
+    TrendConfirmedConfig,
+    TrendConfirmedStrategy,
 )
 
 __all__ = [
     # Strategy Manager
     "StrategyManager",
-    "TradingMode",
     "OrderCommand",
     "OrderSide",
     "OrderType",
@@ -84,7 +81,6 @@ __all__ = [
     "PureMicrostructureStrategy",
     "AdaptiveMicrostructureStrategy",
     "PureMicroConfig",
-    "DualModeStrategy",
-    "DualModeConfig",
-    "ModeBStrategy",
+    "TrendConfirmedConfig",
+    "TrendConfirmedStrategy",
 ]

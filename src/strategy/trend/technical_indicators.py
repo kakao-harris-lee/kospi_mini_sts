@@ -1,5 +1,5 @@
 """
-Technical Indicators for MODE_B Trend Following
+Technical Indicators for Trend Confirmed Strategy
 
 Calculates:
 - Simple Moving Average (SMA)

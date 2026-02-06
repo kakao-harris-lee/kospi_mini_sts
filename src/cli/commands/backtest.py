@@ -25,8 +25,7 @@ STRATEGY_MAP = {
     "hybrid": "HybridStrategy",
     "pure_micro": "PureMicrostructureStrategy",
     "adaptive_micro": "AdaptiveMicrostructureStrategy",
-    "mode_b": "ModeBStrategy",
-    "dual_mode": "ModeBStrategy",
+    "trend_confirmed": "TrendConfirmedStrategy",
 }
 
 
@@ -92,7 +91,7 @@ def run_backtest(
     strategy: str = typer.Option(
         "pure_micro",
         "--strategy", "-s",
-        help="전략 이름 (pure_micro, adaptive_micro, mean_reversion, breakout, ofi_momentum, hybrid, mode_b)",
+        help="전략 이름 (pure_micro, adaptive_micro, mean_reversion, breakout, ofi_momentum, hybrid, trend_confirmed)",
     ),
     start: str = typer.Option(
         ...,
@@ -126,6 +125,10 @@ def run_backtest(
     ),
 ):
     """백테스트 실행"""
+    if strategy in ("mode_b", "dual_mode"):
+        console.print("[yellow]Strategy 'mode_b' is deprecated; using 'trend_confirmed'.[/yellow]")
+        strategy = "trend_confirmed"
+
     if strategy not in STRATEGY_MAP:
         console.print(f"[red]Error:[/red] Unknown strategy '{strategy}'")
         console.print(f"Available: {', '.join(STRATEGY_MAP.keys())}")
@@ -179,7 +182,7 @@ def run_backtest(
             HybridStrategy,
             PureMicrostructureStrategy,
             AdaptiveMicrostructureStrategy,
-            ModeBStrategy,
+            TrendConfirmedStrategy,
         )
         from src.database import ResultRepository
 
@@ -193,8 +196,8 @@ def run_backtest(
             engineer = FeatureEngineer(FeatureConfig())
             df = engineer.transform(df)
 
-        # DL 예측 추가 (MODE_B 전략용)
-        if strategy in ("dual_mode", "mode_b"):
+        # DL 예측 추가 (Trend Confirmed 전략용)
+        if strategy == "trend_confirmed":
             # Try ensemble first, fall back to single model
             from pathlib import Path
             ensemble_dir = Path("models/ensemble")
@@ -227,14 +230,13 @@ def run_backtest(
             "hybrid": HybridStrategy,
             "pure_micro": PureMicrostructureStrategy,
             "adaptive_micro": AdaptiveMicrostructureStrategy,
-            "mode_b": ModeBStrategy,
-            "dual_mode": ModeBStrategy,
+            "trend_confirmed": TrendConfirmedStrategy,
         }
         strategy_instance = strategy_classes[strategy]()
         adapter = StrategyAdapter(strategy_instance)
 
         # 백테스트 설정
-        # Note: For MODE_B, the strategy has its own ATR-based stop management
+        # Note: Trend Confirmed uses its own ATR-based stop management
         # so we use wider limits here to let the strategy's logic work
         config = BacktestConfig(
             initial_capital=capital,

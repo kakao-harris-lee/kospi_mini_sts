@@ -73,12 +73,15 @@ class ModelConfig:
 
 @dataclass
 class StrategyConfig:
-    # 모드 B: 딥러닝 추세 매매
-    mode_b_basis_gap_sigma: float = 1.0
-    mode_b_liquidity_min: float = 50.0
-    mode_b_up_prob_buy: float = 0.85
-    mode_b_down_prob_sell: float = 0.15
-    mode_b_order_size: float = 1.0
+    # Strategy selection
+    strategy_name: str = os.getenv("STRATEGY", "trend_confirmed")
+
+    # Trend Confirmed: 딥러닝 추세 매매
+    trend_confirmed_basis_gap_sigma: float = 1.0
+    trend_confirmed_liquidity_min: float = 50.0
+    trend_confirmed_up_prob_buy: float = 0.85
+    trend_confirmed_down_prob_sell: float = 0.15
+    trend_confirmed_order_size: float = 1.0
 
     # 회피 구간
     liquidity_avoid_threshold: float = 50.0
@@ -147,7 +150,7 @@ class ResilienceConfig:
 
 @dataclass
 class TrendConfig:
-    """MODE_B Deep Learning Trend Following Settings"""
+    """Trend Confirmed Deep Learning Trend Following Settings"""
 
     # Entry Filters
     dl_threshold: float = float(os.getenv("TREND_DL_THRESHOLD", "0.85"))
@@ -217,7 +220,7 @@ class Settings:
     model: ModelConfig = field(default_factory=ModelConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     index: IndexConfig = field(default_factory=IndexConfig)
-    trend: TrendConfig = field(default_factory=TrendConfig)  # MODE_B redesign
+    trend: TrendConfig = field(default_factory=TrendConfig)  # trend_confirmed settings
     consumer: ConsumerGroupConfig = field(default_factory=ConsumerGroupConfig)
     mock_prediction: MockPredictionConfig = field(default_factory=MockPredictionConfig)  # v0.0.2
     resilience: ResilienceConfig = field(default_factory=ResilienceConfig)  # v0.0.3

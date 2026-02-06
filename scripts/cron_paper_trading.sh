@@ -57,10 +57,10 @@ fi
 log "거래일 확인됨. Paper Trading 시작..."
 
 # Paper Trading 서비스 실행 (--once: 오늘만 실행 후 종료)
-# dual_mode: MODE_A (Arbitrage) + MODE_B (Trend Following) with state machine
+# trend_confirmed: Triple Barrier + Trend confirmation
 nohup python scripts/paper_trading_service.py \
     --once \
-    --strategy dual_mode \
+    --strategy trend_confirmed \
     >> "$LOG_FILE" 2>&1 &
 
 # PID 저장

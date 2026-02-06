@@ -1,5 +1,5 @@
 """
-Trend Module - MODE_B Deep Learning Trend Following
+Trend Module - Trend Confirmed Deep Learning Trend Following
 
 Complete trend following system with:
 - Ensemble filter (DL + MA + Ichimoku)

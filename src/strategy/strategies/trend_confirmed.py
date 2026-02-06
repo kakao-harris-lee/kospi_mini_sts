@@ -1,5 +1,5 @@
 """
-MODE_B Strategy - Triple Barrier + TrendEngine (Combined Approach)
+Trend Confirmed Strategy - Triple Barrier + TrendEngine (Combined Approach)
 - Triple Barrier CNN-LSTM for direction signal (BUY/SELL)
 - TrendEngine for technical confirmation (MA + Ichimoku)
 - TrendEngine PositionManager for risk management (ATR stops, time cuts)
@@ -15,7 +15,7 @@ from enum import Enum
 
 import pandas as pd
 
-from ..base import BaseStrategy, Signal, PositionSide, BarData
+from ..base import BaseStrategy, Signal, BarData
 from ..trend import TrendEngine
 
 # Triple Barrier Predictor
@@ -55,24 +55,23 @@ logger = logging.getLogger(__name__)
 
 
 class TradingMode(Enum):
-    """Trading mode for state machine"""
-    AVOID = "AVOID"      # Low liquidity - avoid trading
-    MODE_B = "MODE_B"    # Trend following
+    """Trading mode (single-mode strategy)"""
+    TREND_CONFIRMED = "TREND_CONFIRMED"
 
 
 @dataclass
-class DualModeConfig:
-    """Configuration for MODE_B Strategy"""
+class TrendConfirmedConfig:
+    """Configuration for Trend Confirmed Strategy"""
     # Liquidity thresholds
-    liquidity_avoid_threshold: float = 40.0    # Below this = AVOID
+    liquidity_avoid_threshold: float = 40.0    # Reserved (unused in single-mode)
 
-    # MODE_B: Triple Barrier Classification
+    # Triple Barrier Classification
     triple_barrier_model_dir: str = "docker-training/models/triple_barrier"
     triple_barrier_threshold: float = 0.60  # Lowered confidence threshold (was 0.70)
     triple_barrier_buffer_size: int = 100  # Rolling OHLCV buffer size
     triple_barrier_cache_bars: int = 3  # Cache prediction for N bars to reduce inference overhead
 
-    # MODE_B: Trend settings (legacy - used as fallback)
+    # Trend settings (legacy - used as fallback)
     trend_dl_threshold: float = 0.60  # Lowered to 0.60~0.65 range
     trend_ma_fast: int = 20
     trend_ma_slow: int = 60
@@ -82,7 +81,7 @@ class DualModeConfig:
     trend_max_stop_points: float = 1.5  # Cap max loss at 1.5 points = 75K KRW
     trend_time_cut_atr_threshold: float = 0.3  # Lower bar for favorable movement
 
-    # Order size (MODE_B)
+    # Order size
     order_size: float = 1.0
 
     # Decision logging
@@ -91,23 +90,20 @@ class DualModeConfig:
     enable_clickhouse: bool = True
 
 
-class DualModeStrategy(BaseStrategy):
+class TrendConfirmedStrategy(BaseStrategy):
     """
-    Dual Mode Strategy with State Machine
+    Trend Confirmed Strategy (single mode)
 
-    Automatically switches between:
-    - MODE_B: Combined Triple Barrier + TrendEngine
-        - Triple Barrier (CNN-LSTM) provides direction signal
-        - TrendEngine provides technical confirmation (MA + Ichimoku)
-        - TrendEngine PositionManager handles risk (ATR stops, time cuts)
-    - AVOID: When liquidity is too low
+    - Triple Barrier (CNN-LSTM) provides direction signal
+    - TrendEngine provides technical confirmation (MA + Ichimoku)
+    - TrendEngine PositionManager handles risk (ATR stops, time cuts)
     """
 
-    def __init__(self, config: Optional[DualModeConfig] = None):
-        super().__init__(name="DualMode")
-        self.config = config or DualModeConfig()
+    def __init__(self, config: Optional[TrendConfirmedConfig] = None):
+        super().__init__(name="TrendConfirmed")
+        self.config = config or TrendConfirmedConfig()
 
-        # Initialize Triple Barrier Predictor for MODE_B
+        # Initialize Triple Barrier Predictor
         self._triple_barrier: Optional[TripleBarrierPredictor] = None
         if TRIPLE_BARRIER_AVAILABLE:
             try:
@@ -123,7 +119,7 @@ class DualModeStrategy(BaseStrategy):
         # Rolling OHLCV buffer for triple barrier predictor
         self._ohlcv_buffer: deque = deque(maxlen=self.config.triple_barrier_buffer_size)
 
-        # Initialize trend engine for MODE_B (fallback if triple barrier unavailable)
+        # Initialize trend engine (fallback if triple barrier unavailable)
         self.trend_engine = TrendEngine(
             dl_threshold=self.config.trend_dl_threshold,
             ma_fast_period=self.config.trend_ma_fast,
@@ -136,16 +132,15 @@ class DualModeStrategy(BaseStrategy):
             max_stop_points=self.config.trend_max_stop_points,
         )
 
-        # Current mode
-        self.current_mode = TradingMode.AVOID
+        # Current mode (single mode)
+        self.current_mode = TradingMode.TREND_CONFIRMED
         self.active_engine: Optional[str] = None  # "triple_barrier+trend" or "trend"
 
         # Statistics
         self._stats = {
             'total_bars': 0,
-            'mode_b_bars': 0,
-            'avoid_bars': 0,
-            'mode_b_signals': 0,
+            'trend_confirmed_bars': 0,
+            'trend_confirmed_signals': 0,
             'triple_barrier_signals': 0,  # Signals where TB+Trend agreed
             'trend_fallback_signals': 0,  # Signals from legacy trend engine fallback
         }
@@ -178,11 +173,10 @@ class DualModeStrategy(BaseStrategy):
         if not self._metrics:
             return
 
-        strategy = "mode_b"
+        strategy = "trend_confirmed"
 
-        # Mode value: AVOID=0, MODE_B=1
-        mode_map = {"AVOID": 0, "MODE_B": 1}
-        mode_val = mode_map.get(self.current_mode.value, 0)
+        # Single mode
+        mode_val = 1
         self._metrics.set_trading_mode(strategy, mode_val)
 
         # Active engine indicators
@@ -227,27 +221,29 @@ class DualModeStrategy(BaseStrategy):
             self._metrics.set_trend_position(strategy, 0.0, 0.0)
 
     def generate_signal(self, bar: BarData) -> Signal:
-        """Legacy dual-mode strategy removed. Use ModeBStrategy."""
-        raise NotImplementedError("DualModeStrategy is deprecated. Use ModeBStrategy.")
+        """Generate signal using Trend Confirmed logic only."""
+        self._stats['total_bars'] += 1
+        self._current_bar = bar
 
-    def _notify_mode_change(self, prev: TradingMode, curr: TradingMode, bar: BarData) -> None:
-        """Log mode change event."""
-        logger.info(f"Mode change: {prev.value} → {curr.value} @ {bar.close:.2f}")
+        # Update technical indicators and calibrator
+        self.trend_engine.update_bar(
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+        )
 
-        if self._decision_logger:
-            self._decision_logger.log_mode_change(
-                prev_mode=prev.value,
-                new_mode=curr.value,
-                bar_data={
-                    'close': bar.close,
-                    'spread': bar.spread,
-                    'ofi_zscore': bar.ofi_zscore,
-                }
-            )
+        if bar.up_prob_h10 != 0.5:  # Has ensemble predictions
+            self.trend_engine.ensemble_filter.calibrator.update(1, bar.up_prob_h1)
+            self.trend_engine.ensemble_filter.calibrator.update(3, bar.up_prob_h3)
+            self.trend_engine.ensemble_filter.calibrator.update(5, bar.up_prob_h5)
+            self.trend_engine.ensemble_filter.calibrator.update(10, bar.up_prob_h10)
 
-        # Record mode transition metric
-        if self._metrics:
-            self._metrics.record_mode_transition("dual_mode", prev.value, curr.value)
+        self.current_mode = TradingMode.TREND_CONFIRMED
+        self._stats['trend_confirmed_bars'] += 1
+
+        signal = self._process_trend_confirmed(bar)
+        self._emit_mode_metrics(bar)
+        return signal
 
     def _update_ohlcv_buffer(self, bar: BarData) -> None:
         """Add bar to OHLCV buffer for triple barrier predictor."""
@@ -270,9 +266,9 @@ class DualModeStrategy(BaseStrategy):
             return None
         return df
 
-    def _process_mode_b(self, bar: BarData) -> Signal:
+    def _process_trend_confirmed(self, bar: BarData) -> Signal:
         """
-        Process MODE_B: Combined Triple Barrier + TrendEngine.
+        Process Trend Confirmed: Combined Triple Barrier + TrendEngine.
 
         Entry Flow:
         1. Triple Barrier provides direction signal (BUY/SELL)
@@ -383,7 +379,7 @@ class DualModeStrategy(BaseStrategy):
 
         # If no Triple Barrier signal, fallback to legacy
         if tb_signal is None or tb_signal == "HOLD":
-            return self._process_mode_b_legacy(bar)
+            return self._process_trend_confirmed_legacy(bar)
 
         # Step 2: Get TrendEngine technical confirmation
         # Check MA direction
@@ -456,20 +452,20 @@ class DualModeStrategy(BaseStrategy):
                 return Signal.HOLD
 
             self._stats['triple_barrier_signals'] += 1
-            self._stats['mode_b_signals'] += 1
+            self._stats['trend_confirmed_signals'] += 1
             self.active_engine = "triple_barrier+trend"
 
             full_reason = f"{reason} | Stop: {position.stop_price:.2f} (ATR: {current_atr:.2f})"
-            self._notify_signal(tb_signal, "MODE_B", bar, full_reason)
+            self._notify_signal(tb_signal, self.current_mode.value, bar, full_reason)
 
             return Signal.BUY if tb_signal == "BUY" else Signal.SELL
 
         # No confirmed entry
         return Signal.HOLD
 
-    def _process_mode_b_legacy(self, bar: BarData) -> Signal:
+    def _process_trend_confirmed_legacy(self, bar: BarData) -> Signal:
         """
-        Fallback MODE_B: Trend Following with multi-horizon ensemble.
+        Fallback Trend Confirmed: Trend Following with multi-horizon ensemble.
 
         Used when:
         1. Triple Barrier predictor is not available
@@ -492,6 +488,10 @@ class DualModeStrategy(BaseStrategy):
             bar.up_prob_h10 != 0.5 or bar.up_prob_h1 != 0.5 or
             bar.up_prob_h3 != 0.5 or bar.up_prob_h5 != 0.5
         )
+
+        prev_side = None
+        if self.trend_engine.position_manager.has_position:
+            prev_side = self.trend_engine.position_manager.position_side.value
 
         if has_ensemble:
             # Use multi-horizon "Shortest Confirms Longest" strategy
@@ -527,7 +527,7 @@ class DualModeStrategy(BaseStrategy):
                 elif not ma_bullish:
                     up_prob = 0.35  # (was 0.30)
 
-                logger.debug(f"MODE_B fallback: Using synthetic prob={up_prob:.1%} from MA+Ichimoku")
+                logger.debug(f"TREND_CONFIRMED fallback: Using synthetic prob={up_prob:.1%} from MA+Ichimoku")
 
             signal = self.trend_engine.check(
                 up_prob=up_prob,
@@ -536,26 +536,29 @@ class DualModeStrategy(BaseStrategy):
             )
 
         if signal.action == "OPEN_LONG":
-            self._stats['mode_b_signals'] += 1
+            self._stats['trend_confirmed_signals'] += 1
             self._stats['trend_fallback_signals'] += 1
             self.active_engine = "trend"
             reason = f"LONG entry [fallback] (prob: {up_prob:.1%})"
-            self._notify_signal("BUY", "MODE_B", bar, reason)
+            self._notify_signal("BUY", self.current_mode.value, bar, reason)
             return Signal.BUY
         elif signal.action == "OPEN_SHORT":
-            self._stats['mode_b_signals'] += 1
+            self._stats['trend_confirmed_signals'] += 1
             self._stats['trend_fallback_signals'] += 1
             self.active_engine = "trend"
             reason = f"SHORT entry [fallback] (prob: {1-up_prob:.1%})"
-            self._notify_signal("SELL", "MODE_B", bar, reason)
+            self._notify_signal("SELL", self.current_mode.value, bar, reason)
             return Signal.SELL
         elif signal.action == "CLOSE":
             self.active_engine = None
             self._notify_close(bar, signal.reason)
-            # Return opposite signal to close
-            if self.state.position == PositionSide.LONG:
+            # Return opposite signal to close (direction from TrendEngine/PositionManager)
+            direction = (prev_side or "").upper() or (
+                (signal.direction or "").upper() if hasattr(signal, "direction") else ""
+            )
+            if direction == "LONG":
                 return Signal.SELL
-            elif self.state.position == PositionSide.SHORT:
+            elif direction == "SHORT":
                 return Signal.BUY
 
         return Signal.HOLD
@@ -602,6 +605,7 @@ class DualModeStrategy(BaseStrategy):
             spread=bar.spread,
             ofi_zscore=bar.ofi_zscore,
             regime=bar.regime or "unknown",
+            strategy=self.name,
         )
         self._decision_logger.log_entry(decision)
 
@@ -647,6 +651,7 @@ class DualModeStrategy(BaseStrategy):
             spread=bar.spread,
             ofi_zscore=bar.ofi_zscore,
             regime=bar.regime or "unknown",
+            strategy=self.name,
         )
         self._decision_logger.log_close(decision)
 
@@ -661,8 +666,7 @@ class DualModeStrategy(BaseStrategy):
             **self._stats,
             'current_mode': self.current_mode.value,
             'active_engine': self.active_engine,
-            'mode_b_ratio': self._stats['mode_b_bars'] / total if total > 0 else 0,
-            'avoid_ratio': self._stats['avoid_bars'] / total if total > 0 else 0,
+            'trend_confirmed_ratio': self._stats['trend_confirmed_bars'] / total if total > 0 else 0,
             'trend_stats': self.trend_engine.get_stats(),
         }
 
@@ -675,7 +679,7 @@ class DualModeStrategy(BaseStrategy):
         """Reset strategy state."""
         super().reset()
         self.trend_engine.reset()
-        self.current_mode = TradingMode.AVOID
+        self.current_mode = TradingMode.TREND_CONFIRMED
         self.active_engine = None
         for key in self._stats:
             if isinstance(self._stats[key], int):
@@ -685,36 +689,3 @@ class DualModeStrategy(BaseStrategy):
         # Reset TB prediction cache
         self._tb_cache_result = None
         self._tb_cache_bar_count = 0
-
-
-class ModeBStrategy(DualModeStrategy):
-    """MODE_B-only strategy (triple barrier + trend)."""
-
-    def __init__(self, config: Optional[DualModeConfig] = None):
-        super().__init__(config=config)
-        self.name = "ModeB"
-
-    def generate_signal(self, bar: BarData) -> Signal:
-        """Generate signal using MODE_B logic only."""
-        self._stats['total_bars'] += 1
-        self._current_bar = bar
-
-        # Update technical indicators and calibrator for MODE_B
-        self.trend_engine.update_bar(
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-        )
-
-        if bar.up_prob_h10 != 0.5:  # Has ensemble predictions
-            self.trend_engine.ensemble_filter.calibrator.update(1, bar.up_prob_h1)
-            self.trend_engine.ensemble_filter.calibrator.update(3, bar.up_prob_h3)
-            self.trend_engine.ensemble_filter.calibrator.update(5, bar.up_prob_h5)
-            self.trend_engine.ensemble_filter.calibrator.update(10, bar.up_prob_h10)
-
-        self.current_mode = TradingMode.MODE_B
-        self._stats['mode_b_bars'] += 1
-
-        signal = self._process_mode_b(bar)
-        self._emit_mode_metrics(bar)
-        return signal

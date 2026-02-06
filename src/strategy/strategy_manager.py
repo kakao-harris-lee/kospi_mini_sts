@@ -27,12 +27,6 @@ from src.strategy.base import BarData
 logger = setup_logging("strategy")
 
 
-class TradingMode(Enum):
-    """트레이딩 모드"""
-    AVOID = "AVOID"      # 회피 구간
-    MODE_B = "MODE_B"    # 딥러닝 추세 매매
-
-
 class OrderSide(Enum):
     """주문 방향"""
     BUY = "BUY"
@@ -54,7 +48,7 @@ class OrderCommand:
     size: float
     price: Optional[float] = None
     strategy_id: str = ""
-    mode: TradingMode = TradingMode.MODE_B
+    mode: str = ""
     timestamp: float = 0.0
 
     def __post_init__(self):
@@ -72,7 +66,7 @@ class OrderCommand:
             'size': self.size,
             'price': self.price,
             'strategy_id': self.strategy_id,
-            'mode': self.mode.value,
+            'mode': self.mode,
             'timestamp': self.timestamp
         }
 
@@ -95,7 +89,7 @@ class DryRunOrderExecutor(BaseOrderExecutor):
     def execute(self, order: OrderCommand) -> bool:
         logger.info(
             f"[DRY RUN] {order.side.value} {order.size} {order.symbol} "
-            f"@ {order.price or 'MARKET'} (Mode: {order.mode.value})"
+            f"@ {order.price or 'MARKET'} (Mode: {order.mode or 'N/A'})"
         )
         self.orders.append(order)
         return True
@@ -109,8 +103,7 @@ class StrategyManager(StreamConsumer):
     - FEATURE_STREAM: 유동성 정보
     - PREDICTION_STREAM: 모델 예측 결과
 
-    이원화 전략:
-    - Mode B: 딥러닝 추세 매매 (높은 신뢰도 예측)
+    설정된 전략을 사용하여 주문을 생성합니다.
     """
 
     def __init__(self, order_executor: BaseOrderExecutor = None):
@@ -132,42 +125,19 @@ class StrategyManager(StreamConsumer):
         self.cfg = settings.strategy
         self.trend_cfg = settings.trend
 
-        # MODE_B 전략 초기화
-        # settings.py의 설정값들을 DualModeConfig에 매핑
-        from src.strategy.strategies.dual_mode import ModeBStrategy, DualModeConfig
-
-        dual_mode_config = DualModeConfig(
-            # Liquidity Filters
-            liquidity_avoid_threshold=self.cfg.liquidity_avoid_threshold,
-
-            # MODE_B: Triple Barrier & Trend Settings
-            # (Triple Barrier 모델 경로는 기본값 사용)
-            trend_dl_threshold=self.trend_cfg.dl_threshold,
-            trend_ma_fast=self.trend_cfg.ma_fast_period,
-            trend_ma_slow=self.trend_cfg.ma_slow_period,
-            trend_atr_period=self.trend_cfg.atr_period,
-            trend_atr_multiplier=self.trend_cfg.atr_stop_multiplier,
-            trend_time_cut_minutes=self.trend_cfg.time_cut_minutes,
-            trend_time_cut_atr_threshold=self.trend_cfg.time_cut_atr_threshold,
-
-            # Common
-            order_size=self.trend_cfg.order_size,
-            enable_decision_logging=True,
-            enable_telegram=True,
-            enable_clickhouse=True
-        )
-
-        self.strategy = ModeBStrategy(config=dual_mode_config)
-        logger.info(
-            f"Initialized MODE_B strategy with threshold={dual_mode_config.trend_dl_threshold}"
-        )
+        # 전략 초기화 (settings.STRATEGY 기준)
+        self.strategy_name = (self.cfg.strategy_name or "trend_confirmed").lower()
+        self.strategy = self._build_strategy(self.strategy_name)
+        self.strategy_id = getattr(self.strategy, "name", self.strategy.__class__.__name__)
+        self.mode_name = self._resolve_mode_name(self.strategy) or self.strategy_id
+        logger.info(f"Initialized strategy: {self.strategy_id} (mode={self.mode_name})")
 
         # 캐시된 Feature 데이터 (symbol -> latest feature)
         self._feature_cache: Dict[str, Dict] = {}
 
         # 통계
         self._order_count = 0
-        self._mode_counts = {m: 0 for m in TradingMode}
+        self._processed_count = 0
 
         # Per-trade Telegram alerts (Strategy Manager)
         self._trade_alerts_enabled = settings.strategy.trade_alerts_enabled
@@ -189,6 +159,77 @@ class StrategyManager(StreamConsumer):
                 self._trade_alerts_enabled = False
                 self._trade_notifier = None
 
+    def _build_strategy(self, name: str):
+        """Instantiate strategy based on configured name."""
+        key = (name or "").lower()
+
+        if key in ("dual_mode", "dual-mode"):
+            logger.warning("Strategy 'dual_mode' is deprecated; using 'trend_confirmed'.")
+            key = "trend_confirmed"
+
+        if key in ("mode_b", "modeb"):
+            logger.warning("Strategy 'mode_b' is deprecated; using 'trend_confirmed'.")
+            key = "trend_confirmed"
+
+        if key in ("trend_confirmed", "trend-confirmed"):
+            from src.strategy.strategies.trend_confirmed import (
+                TrendConfirmedStrategy,
+                TrendConfirmedConfig,
+            )
+
+            config = TrendConfirmedConfig(
+                # Trend Confirmed: Triple Barrier & Trend Settings
+                # (Triple Barrier 모델 경로는 기본값 사용)
+                trend_dl_threshold=self.trend_cfg.dl_threshold,
+                trend_ma_fast=self.trend_cfg.ma_fast_period,
+                trend_ma_slow=self.trend_cfg.ma_slow_period,
+                trend_atr_period=self.trend_cfg.atr_period,
+                trend_atr_multiplier=self.trend_cfg.atr_stop_multiplier,
+                trend_time_cut_minutes=self.trend_cfg.time_cut_minutes,
+                trend_time_cut_atr_threshold=self.trend_cfg.time_cut_atr_threshold,
+
+                # Common
+                order_size=self.trend_cfg.order_size,
+                enable_decision_logging=True,
+                enable_telegram=True,
+                enable_clickhouse=True
+            )
+
+            return TrendConfirmedStrategy(config=config)
+
+        from src.strategy.strategies import (
+            MeanReversionStrategy,
+            BreakoutStrategy,
+            OFIMomentumStrategy,
+            HybridStrategy,
+            PureMicrostructureStrategy,
+            AdaptiveMicrostructureStrategy,
+        )
+
+        strategy_map = {
+            "mean_reversion": MeanReversionStrategy,
+            "breakout": BreakoutStrategy,
+            "ofi_momentum": OFIMomentumStrategy,
+            "hybrid": HybridStrategy,
+            "pure_micro": PureMicrostructureStrategy,
+            "adaptive_micro": AdaptiveMicrostructureStrategy,
+        }
+
+        if key in strategy_map:
+            return strategy_map[key]()
+
+        logger.warning(f"Unknown strategy '{name}'. Falling back to trend_confirmed.")
+        return self._build_strategy("trend_confirmed")
+
+    def _resolve_mode_name(self, strategy) -> Optional[str]:
+        """Resolve mode name from strategy (if available)."""
+        if hasattr(strategy, "get_mode_name"):
+            try:
+                return strategy.get_mode_name()
+            except Exception:
+                return None
+        return getattr(strategy, "mode_name", None)
+
     def _send_trade_alert(self, order: OrderCommand, ref_price: Optional[float]) -> None:
         """Send per-trade alert via Telegram."""
         if not self._trade_alerts_enabled or not self._trade_notifier:
@@ -203,6 +244,7 @@ class StrategyManager(StreamConsumer):
         run_mode = "DRY RUN" if settings.dry_run else "LIVE"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+        mode_label = order.mode or "N/A"
         msg = (
             f"<b>📌 Trade {run_mode}</b>\n"
             f"<b>Strategy:</b> {order.strategy_id}\n"
@@ -211,7 +253,7 @@ class StrategyManager(StreamConsumer):
             f"<b>Size:</b> {order.size}\n"
             f"<b>Type:</b> {order.order_type.value}\n"
             f"<b>Price:</b> {price_str}\n"
-            f"<b>Mode:</b> {order.mode.value}\n"
+            f"<b>Mode:</b> {mode_label}\n"
             f"<i>{ts}</i>"
         )
 
@@ -266,7 +308,7 @@ class StrategyManager(StreamConsumer):
             # Feature 데이터를 BarData 객체로 변환
             bar = BarData.from_dict(feature)
 
-            # 예측값 주입 (MODE_B 전략에서 사용)
+            # 예측값 주입 (전략에서 사용)
             bar.up_prob = up_prob
             bar.down_prob = down_prob
 
@@ -284,18 +326,17 @@ class StrategyManager(StreamConsumer):
             from src.strategy.base import Signal
             signal = self.strategy.generate_signal(bar)
 
-            # 현재 모드 카운팅 업데이트
-            current_mode_enum = TradingMode(self.strategy.current_mode.value)
-            self._mode_counts[current_mode_enum] += 1
+            # 처리 카운트 업데이트
+            self._processed_count += 1
 
             # 5. 주문 실행 처리
             if signal == Signal.BUY or signal == Signal.SELL:
                 side = OrderSide.BUY if signal == Signal.BUY else OrderSide.SELL
 
-                # 주문 유형 결정 (MODE_B는 시장가 선호)
+                # 주문 유형 결정 (기본: 시장가)
                 order_type = OrderType.MARKET
                 price = None
-                order_size = self.strategy.config.order_size
+                order_size = getattr(getattr(self.strategy, "config", None), "order_size", 1.0)
 
                 # 주문 명령 생성
                 order = OrderCommand(
@@ -304,8 +345,8 @@ class StrategyManager(StreamConsumer):
                     order_type=order_type,
                     size=order_size,
                     price=price,
-                    strategy_id=f"ModeB_{side.value}",
-                    mode=current_mode_enum,
+                    strategy_id=self.strategy_id,
+                    mode=self.mode_name,
                     timestamp=time.time()
                 )
 
@@ -318,17 +359,17 @@ class StrategyManager(StreamConsumer):
 
                     logger.info(
                         f"Order Placed: {side.value} {order.size} {symbol} "
-                        f"[{current_mode_enum.value}] Price={price or 'MKT'}"
+                        f"[{self.mode_name}] Price={price or 'MKT'}"
                     )
 
                     # Per-trade alert (Telegram)
                     self._send_trade_alert(order, ref_price=bar.close)
 
             # 6. 주기적 통계 로그
-            total_processed = sum(self._mode_counts.values())
-            if total_processed % 1000 == 0 and total_processed > 0:
-                stats = self.strategy.get_stats()
-                logger.info(f"Strategy Stats: {stats}")
+            if self._processed_count % 1000 == 0 and self._processed_count > 0:
+                if hasattr(self.strategy, "get_stats"):
+                    stats = self.strategy.get_stats()
+                    logger.info(f"Strategy Stats: {stats}")
 
             return True
 

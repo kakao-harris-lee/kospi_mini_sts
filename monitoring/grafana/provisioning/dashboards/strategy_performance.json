@@ -1107,7 +1107,7 @@
               "options": {
                 "0": {"color": "orange", "index": 0, "text": "AVOID"},
                 "1": {"color": "blue", "index": 1, "text": "MODE_A"},
-                "2": {"color": "green", "index": 2, "text": "MODE_B"}
+                "2": {"color": "green", "index": 2, "text": "TREND_CONFIRMED"}
               },
               "type": "value"
             }
@@ -1136,7 +1136,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "trading_mode{strategy=\"dual_mode\"} or vector(0)",
+          "expr": "trading_mode{strategy=\"trend_confirmed\"} or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1173,7 +1173,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "trading_mode_active_engine{strategy=\"dual_mode\"} == 1",
+          "expr": "trading_mode_active_engine{strategy=\"trend_confirmed\"} == 1",
           "legendFormat": "{{engine}}",
           "refId": "A"
         }
@@ -1223,7 +1223,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "triple_barrier_signal{strategy=\"dual_mode\"} or vector(0)",
+          "expr": "triple_barrier_signal{strategy=\"trend_confirmed\"} or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1264,7 +1264,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "triple_barrier_confidence{strategy=\"dual_mode\"} or vector(0)",
+          "expr": "triple_barrier_confidence{strategy=\"trend_confirmed\"} or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1312,7 +1312,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "trend_ma_direction{strategy=\"dual_mode\"} or vector(0)",
+          "expr": "trend_ma_direction{strategy=\"trend_confirmed\"} or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1362,7 +1362,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "trend_ichimoku_position{strategy=\"dual_mode\"} or vector(0)",
+          "expr": "trend_ichimoku_position{strategy=\"trend_confirmed\"} or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1399,7 +1399,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "trend_atr{strategy=\"dual_mode\"} or vector(0)",
+          "expr": "trend_atr{strategy=\"trend_confirmed\"} or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }

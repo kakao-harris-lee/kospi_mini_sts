@@ -63,7 +63,7 @@ tick_collector와 feature_processor를 자동으로 시작합니다.
 
 옵션:
     -s, --strategy NAME     전략 이름 (기본: pure_micro)
-                            사용 가능: pure_micro, adaptive_micro, dual_mode,
+                            사용 가능: pure_micro, adaptive_micro, trend_confirmed,
                                       mean_reversion, breakout, ofi_momentum, hybrid
     -d, --duration TIME     실행 시간 (기본: 1h)
                             예: 30m, 1h, 2h, 3600s

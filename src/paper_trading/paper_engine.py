@@ -600,7 +600,7 @@ async def run_paper_trading(
         HybridStrategy,
         PureMicrostructureStrategy,
         AdaptiveMicrostructureStrategy,
-        ModeBStrategy,
+        TrendConfirmedStrategy,
     )
 
     strategy_classes = {
@@ -610,9 +610,12 @@ async def run_paper_trading(
         "hybrid": HybridStrategy,
         "pure_micro": PureMicrostructureStrategy,
         "adaptive_micro": AdaptiveMicrostructureStrategy,
-        "mode_b": ModeBStrategy,
-        "dual_mode": ModeBStrategy,
+        "trend_confirmed": TrendConfirmedStrategy,
     }
+
+    if strategy_name in ("mode_b", "dual_mode"):
+        logger.warning("Strategy '%s' is deprecated; using 'trend_confirmed'.", strategy_name)
+        strategy_name = "trend_confirmed"
 
     if strategy_name not in strategy_classes:
         raise ValueError(f"Unknown strategy: {strategy_name}")

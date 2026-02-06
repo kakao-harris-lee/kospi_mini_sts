@@ -462,7 +462,7 @@ def add_ensemble_predictions(
     Add multi-horizon ensemble predictions to DataFrame.
 
     DEPRECATED: Ensemble predictor has been removed. Use triple barrier classifier
-    in DualModeStrategy instead. This function now just adds default 0.5 values.
+    in TrendConfirmedStrategy instead. This function now just adds default 0.5 values.
 
     Args:
         df: OHLCV DataFrame (datetime, open, high, low, close, volume)

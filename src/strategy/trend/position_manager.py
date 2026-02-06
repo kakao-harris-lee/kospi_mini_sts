@@ -1,5 +1,5 @@
 """
-Position Manager for MODE_B Trend Following
+Position Manager for Trend Confirmed Strategy
 
 Manages:
 - Position state tracking (entry price, time, side)

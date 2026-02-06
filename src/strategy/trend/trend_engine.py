@@ -1,5 +1,5 @@
 """
-Trend Engine for MODE_B Deep Learning Trend Following
+Trend Engine for Trend Confirmed Strategy
 
 Main orchestrator that combines:
 - Technical Indicators (MA, Ichimoku, ATR)
@@ -40,7 +40,7 @@ class TrendSignal:
 
 class TrendEngine:
     """
-    MODE_B Deep Learning Trend Following Engine
+    Trend Confirmed Deep Learning Trend Following Engine
 
     Entry Flow:
     1. Check if no position exists
@@ -396,7 +396,7 @@ class TrendEngine:
         self._stats['entries'] += 1
 
         logger.info(
-            f"MODE_B ENTRY: {direction} @ {entry_price:.2f}, "
+            f"TREND_CONFIRMED ENTRY: {direction} @ {entry_price:.2f}, "
             f"stop={position.stop_price:.2f}, "
             f"ATR={tech.atr:.2f}"
         )
@@ -433,7 +433,7 @@ class TrendEngine:
         self._stats['exits'] += 1
 
         logger.info(
-            f"MODE_B EXIT: {direction} @ {exit_price:.2f}, "
+            f"TREND_CONFIRMED EXIT: {direction} @ {exit_price:.2f}, "
             f"PnL={pnl:.2f}, reason={exit_signal.reason.value}"
         )
 

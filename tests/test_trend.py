@@ -1,5 +1,5 @@
 """
-Tests for MODE_B Trend Following Components
+Tests for Trend Confirmed Components
 
 Tests cover:
 - TechnicalCalculator: MA, Ichimoku, ATR calculations

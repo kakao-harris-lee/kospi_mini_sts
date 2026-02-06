@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS kospi.trading_decisions (
     timestamp DateTime64(3),
     signal String,              -- 'BUY', 'SELL', 'CLOSE', 'MODE_CHANGE'
     price Float64,
-    mode String,                -- 'MODE_A', 'MODE_B'
+    mode String,                -- 'TREND_CONFIRMED'
     reason String,
 
     -- DL Probabilities
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS kospi.trading_decisions (
     hold_time_minutes UInt16,
 
     -- Metadata
-    strategy String DEFAULT 'dual_mode',
+    strategy String DEFAULT 'trend_confirmed',
     session_id String
 )
 ENGINE = MergeTree()

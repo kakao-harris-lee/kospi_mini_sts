@@ -1,5 +1,5 @@
 """
-Ensemble Filter for MODE_B Trend Following
+Ensemble Filter for Trend Confirmed Strategy
 
 All 3 conditions must agree for entry:
 1. Deep Learning: P(Up) > 85% or P(Down) > 85%

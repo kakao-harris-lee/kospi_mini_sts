@@ -1,5 +1,5 @@
 """
-ModeB strategy tests.
+Trend Confirmed strategy tests.
 """
 from datetime import datetime
 from unittest.mock import Mock, patch
@@ -7,7 +7,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.strategy.base import Signal, BarData
-from src.strategy.strategies.dual_mode import ModeBStrategy, DualModeConfig, TradingMode
+from src.strategy.strategies.trend_confirmed import (
+    TrendConfirmedStrategy,
+    TrendConfirmedConfig,
+    TradingMode,
+)
 
 
 def create_bar(
@@ -40,18 +44,18 @@ def create_bar(
     )
 
 
-class TestModeBStrategySignals:
+class TestTrendConfirmedStrategySignals:
     @pytest.fixture
     def strategy(self):
-        config = DualModeConfig(enable_decision_logging=False)
-        with patch('src.strategy.strategies.dual_mode.TRIPLE_BARRIER_AVAILABLE', False):
-            strategy = ModeBStrategy(config)
+        config = TrendConfirmedConfig(enable_decision_logging=False)
+        with patch('src.strategy.strategies.trend_confirmed.TRIPLE_BARRIER_AVAILABLE', False):
+            strategy = TrendConfirmedStrategy(config)
         return strategy
 
-    def test_mode_b_uses_process_mode_b(self, strategy):
-        strategy._process_mode_b = Mock(return_value=Signal.BUY)
+    def test_trend_confirmed_uses_process_trend_confirmed(self, strategy):
+        strategy._process_trend_confirmed = Mock(return_value=Signal.BUY)
         bar = create_bar()
         signal = strategy.generate_signal(bar)
         assert signal == Signal.BUY
-        assert strategy.current_mode == TradingMode.MODE_B
-        strategy._process_mode_b.assert_called_once()
+        assert strategy.current_mode == TradingMode.TREND_CONFIRMED
+        strategy._process_trend_confirmed.assert_called_once()

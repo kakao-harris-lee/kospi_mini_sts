@@ -8,7 +8,7 @@ Tests for minimum order quantity enforcement across:
 """
 import pytest
 from src.collector.kis_order import OrderRequest, OrderSide, OrderType
-from src.strategy.strategy_manager import OrderCommand, OrderSide as StrategySide, OrderType as StrategyOrderType, TradingMode
+from src.strategy.strategy_manager import OrderCommand, OrderSide as StrategySide, OrderType as StrategyOrderType
 
 
 class TestOrderRequestValidation:
@@ -118,7 +118,7 @@ class TestOrderCommandValidation:
             order_type=StrategyOrderType.MARKET,
             size=2.0,
             strategy_id="test_strategy",
-            mode=TradingMode.MODE_B
+            mode="TREND_CONFIRMED"
         )
 
         order_dict = order.to_dict()

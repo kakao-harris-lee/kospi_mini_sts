@@ -30,7 +30,7 @@ class DecisionLog:
     timestamp: datetime
     signal: str  # BUY, SELL, CLOSE
     price: float
-    mode: str  # MODE_B
+    mode: str  # TREND_CONFIRMED
     reason: str
 
     # DL Probabilities
@@ -66,7 +66,7 @@ class DecisionLog:
     hold_time_minutes: Optional[int] = None
 
     # Metadata
-    strategy: str = "dual_mode"
+    strategy: str = "trend_confirmed"
     session_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -250,7 +250,7 @@ class DecisionLogger:
             session_id=self.session_id,
         )
         self._write_json(decision)
-        # Mode changes handled by existing DualModeStrategy telegram
+        # Mode changes handled by TrendConfirmedStrategy decision logging
 
     def log_rejected(self, decision: DecisionLog, reject_reason: str) -> None:
         """Log a rejected signal (filter blocked)."""
