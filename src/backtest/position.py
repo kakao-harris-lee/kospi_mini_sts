@@ -41,17 +41,19 @@ class Position:
     highest_price: float = 0.0  # 트레일링 스탑용
     lowest_price: float = 0.0   # 트레일링 스탑용
 
-    def update_price(self, current_price: float):
-        """현재가 업데이트 및 미실현 손익 계산"""
+    def update_price(self, current_price: float, point_value: float = 1.0):
+        """현재가 업데이트 및 미실현 손익 계산 (KRW 기준)"""
         if self.side == PositionSide.FLAT:
             self.unrealized_pnl = 0.0
             return
 
-        # 미실현 손익 계산
+        # 미실현 손익 계산 (포인트 → KRW)
         if self.side == PositionSide.LONG:
-            self.unrealized_pnl = (current_price - self.entry_price) * self.quantity
+            pnl_points = (current_price - self.entry_price) * self.quantity
         else:  # SHORT
-            self.unrealized_pnl = (self.entry_price - current_price) * self.quantity
+            pnl_points = (self.entry_price - current_price) * self.quantity
+
+        self.unrealized_pnl = pnl_points * point_value
 
         # 최고/최저가 업데이트
         if current_price > self.highest_price:
@@ -78,9 +80,10 @@ class PositionManager:
     - SHORT → LONG: 청산 후 반대 포지션 (선택적)
     """
 
-    def __init__(self, initial_capital: float = 10_000_000):
+    def __init__(self, initial_capital: float = 10_000_000, point_value: float = 50_000):
         self.initial_capital = initial_capital
         self.capital = initial_capital
+        self.point_value = point_value
         self.position = Position()
         self.trades: List[Trade] = []
         self.equity_curve: List[float] = [initial_capital]
@@ -137,7 +140,7 @@ class PositionManager:
             lowest_price=execution_price
         )
 
-        # 수수료 차감
+        # 수수료 차감 (KRW)
         self.capital -= commission
 
         # 거래 기록
@@ -186,17 +189,20 @@ class PositionManager:
         else:
             execution_price = price + slippage  # 매수 청산 시 불리하게
 
-        # 손익 계산
+        # 손익 계산 (포인트)
         if self.position.side == PositionSide.LONG:
-            pnl = (execution_price - self.position.entry_price) * self.position.quantity
+            pnl_points = (execution_price - self.position.entry_price) * self.position.quantity
         else:
-            pnl = (self.position.entry_price - execution_price) * self.position.quantity
+            pnl_points = (self.position.entry_price - execution_price) * self.position.quantity
 
-        # 수수료 차감
-        pnl -= commission
+        # 수수료 차감 (포인트로 환산)
+        commission_points = commission / self.point_value if self.point_value else 0.0
+        pnl_points -= commission_points
 
-        # 자본 업데이트
-        self.capital += pnl
+        # 자본 업데이트 (KRW)
+        pnl_krw = pnl_points * self.point_value
+
+        self.capital += pnl_krw
 
         # 거래 기록
         trade = Trade(
@@ -206,7 +212,7 @@ class PositionManager:
             quantity=self.position.quantity,
             commission=commission,
             slippage=slippage,
-            pnl=pnl
+            pnl=pnl_points
         )
         self.trades.append(trade)
 
@@ -216,17 +222,17 @@ class PositionManager:
         logger.debug(
             f"Closed {self.position.side.value} position: "
             f"{self.position.quantity} @ {execution_price:.2f} "
-            f"(PnL: {pnl:+.0f}, commission: {commission:.0f})"
+            f"(PnL: {pnl_points:+.0f}pts, commission: {commission:.0f}KRW)"
         )
 
         # 포지션 초기화
         self.position = Position()
 
-        return pnl
+        return pnl_points
 
     def update(self, current_price: float):
         """현재가 업데이트"""
-        self.position.update_price(current_price)
+        self.position.update_price(current_price, point_value=self.point_value)
 
     def get_stats(self) -> dict:
         """거래 통계 반환"""

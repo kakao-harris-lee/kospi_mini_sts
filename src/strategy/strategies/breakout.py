@@ -69,7 +69,8 @@ class BreakoutStrategy(BaseStrategy):
     def generate_signal(self, bar: BarData) -> Signal:
         """시그널 생성"""
         # 최소 히스토리 체크
-        if len(self.history) < self.config.min_history:
+        min_required = max(self.config.min_history, self.config.lookback_period + 1)
+        if len(self.history) < min_required:
             return Signal.HOLD
 
         # 레짐 체크 (None = warm-up period, skip trading)
@@ -88,9 +89,12 @@ class BreakoutStrategy(BaseStrategy):
                 return self._get_exit_signal()
             return Signal.HOLD
 
-        # N분 고점/저점 계산
-        highest = self.highest(self.config.lookback_period)
-        lowest = self.lowest(self.config.lookback_period)
+        # N분 고점/저점 계산 (현재 바 제외)
+        window = self.history[-(self.config.lookback_period + 1):-1]
+        if not window:
+            return Signal.HOLD
+        highest = max(b.high for b in window)
+        lowest = min(b.low for b in window)
 
         if highest == 0 or lowest == float('inf'):
             return Signal.HOLD

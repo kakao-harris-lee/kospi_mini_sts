@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 class OFIMomentumConfig:
     """OFI Momentum 전략 설정"""
     # OFI 시그널 설정
-    ofi_zscore_threshold: float = 2.0    # Z-Score 임계값
-    consecutive_bars: int = 3            # 연속 바 수
+    ofi_zscore_threshold: float = 1.5    # Z-Score 임계값
+    consecutive_bars: int = 2            # 연속 바 수
 
     # 스프레드 필터
     require_tight_spread: bool = True    # 스프레드 좁을 때만 진입
+    max_spread: float = 0.06             # 최대 허용 스프레드 (포인트)
 
     # 진입 조건
     min_history: int = 20                # 최소 히스토리 바 수
@@ -37,7 +38,7 @@ class OFIMomentumConfig:
 
     # 호가 불균형 확인
     imbalance_confirm: bool = True
-    imbalance_threshold: float = 0.2     # 불균형 임계값
+    imbalance_threshold: float = 0.1     # 불균형 임계값
 
 
 class OFIMomentumStrategy(BaseStrategy):
@@ -45,8 +46,8 @@ class OFIMomentumStrategy(BaseStrategy):
     OFI Momentum 전략
 
     OFI가 ±2σ를 연속 3분 이상 유지하면:
-    - OFI > +2σ (연속 3분) + 스프레드 좁음 → 매수
-    - OFI < -2σ (연속 3분) + 스프레드 좁음 → 매도
+    - OFI > +1.5σ (연속 2분) + 스프레드 좁음 → 매수
+    - OFI < -1.5σ (연속 2분) + 스프레드 좁음 → 매도
 
     청산:
     - 손절: 1포인트
@@ -124,7 +125,7 @@ class OFIMomentumStrategy(BaseStrategy):
         # 스프레드 필터
         if self.config.require_tight_spread:
             # spread가 0보다 크면 정상, 작으면 데이터 없음
-            if bar.spread > 0.04:  # 2틱 이상이면 진입 안함
+            if bar.spread > self.config.max_spread:
                 return Signal.HOLD
 
         # 호가 불균형 확인

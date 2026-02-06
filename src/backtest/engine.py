@@ -192,7 +192,8 @@ class BacktestEngine:
 
         # 포지션 관리자
         self.position_manager = PositionManager(
-            initial_capital=self.config.initial_capital
+            initial_capital=self.config.initial_capital,
+            point_value=self.config.point_value,
         )
 
         # 리스크 관리자
@@ -333,15 +334,12 @@ class BacktestEngine:
             is_entry=True
         )
 
-        # commission은 원화이므로 포인트로 변환
-        commission_in_points = cost.commission / self.config.point_value
-
         success = self.position_manager.open_position(
             side=side,
             price=price,
             quantity=self.config.position_size,
             timestamp=timestamp,
-            commission=commission_in_points,
+            commission=cost.commission,
             slippage=cost.slippage
         )
 
@@ -366,13 +364,10 @@ class BacktestEngine:
             is_entry=False
         )
 
-        # commission은 원화이므로 포인트로 변환
-        commission_in_points = cost.commission / self.config.point_value
-
         pnl = self.position_manager.close_position(
             price=price,
             timestamp=timestamp,
-            commission=commission_in_points,
+            commission=cost.commission,
             slippage=cost.slippage
         )
 

@@ -129,6 +129,11 @@ class FeatureEngineer:
         df['bid_ask_imbalance'] = df['bid_ask_imbalance'] * np.sqrt(volume_factor)
         df['bid_ask_imbalance'] = df['bid_ask_imbalance'].clip(-1, 1)
 
+        # 합성 buy_volume_ratio (0~1) 생성: backtest에서 trade_flow_confirm 사용 가능하게
+        if 'buy_volume_ratio' not in df.columns:
+            df['buy_volume_ratio'] = (df['bid_ask_imbalance'] + 1.0) / 2.0
+            df['buy_volume_ratio'] = df['buy_volume_ratio'].clip(0.0, 1.0).fillna(0.5)
+
         return df
 
     def _add_spread_features(self, df: pd.DataFrame) -> pd.DataFrame:
