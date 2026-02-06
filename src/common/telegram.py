@@ -101,7 +101,15 @@ class TelegramNotifier:
 
         try:
             resp = requests.post(self.api_url, json=payload, timeout=10)
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                body = ""
+                try:
+                    body = resp.text
+                except Exception:
+                    body = "<unreadable>"
+                logger.error(f"Telegram API error: {resp.status_code} - {body}")
+                return False
+            return True
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
             return False

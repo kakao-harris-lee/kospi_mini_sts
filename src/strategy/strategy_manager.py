@@ -169,6 +169,60 @@ class StrategyManager(StreamConsumer):
         self._order_count = 0
         self._mode_counts = {m: 0 for m in TradingMode}
 
+        # Per-trade Telegram alerts (Strategy Manager)
+        self._trade_alerts_enabled = settings.strategy.trade_alerts_enabled
+        self._trade_notifier = None
+        if self._trade_alerts_enabled:
+            try:
+                from src.common.telegram import TelegramNotifier
+                self._trade_notifier = TelegramNotifier(
+                    check_trading_day=settings.monitoring.telegram_check_trading_day
+                )
+                if not self._trade_notifier.bot_token or not self._trade_notifier.chat_id:
+                    logger.warning(
+                        "Trade alerts enabled but Telegram not configured; disabling trade alerts."
+                    )
+                    self._trade_alerts_enabled = False
+                    self._trade_notifier = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize trade alerts: {e}")
+                self._trade_alerts_enabled = False
+                self._trade_notifier = None
+
+    def _send_trade_alert(self, order: OrderCommand, ref_price: Optional[float]) -> None:
+        """Send per-trade alert via Telegram."""
+        if not self._trade_alerts_enabled or not self._trade_notifier:
+            return
+
+        # Price display (market orders use reference price if provided)
+        if order.order_type == OrderType.MARKET:
+            price_str = f"{ref_price:.2f}" if ref_price is not None else "MKT"
+        else:
+            price_str = f"{order.price:.2f}" if order.price is not None else "N/A"
+
+        run_mode = "DRY RUN" if settings.dry_run else "LIVE"
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        msg = (
+            f"<b>📌 Trade {run_mode}</b>\n"
+            f"<b>Strategy:</b> {order.strategy_id}\n"
+            f"<b>Symbol:</b> {order.symbol}\n"
+            f"<b>Side:</b> {order.side.value}\n"
+            f"<b>Size:</b> {order.size}\n"
+            f"<b>Type:</b> {order.order_type.value}\n"
+            f"<b>Price:</b> {price_str}\n"
+            f"<b>Mode:</b> {order.mode.value}\n"
+            f"<i>{ts}</i>"
+        )
+
+        if not self._trade_notifier.send(msg):
+            logger.warning(
+                "Trade alert send failed: %s %s %s",
+                order.side.value,
+                order.symbol,
+                price_str,
+            )
+
     def _get_latest_feature(self, symbol: str) -> Optional[Dict]:
         """
         심볼의 최신 Feature 조회
@@ -266,6 +320,9 @@ class StrategyManager(StreamConsumer):
                         f"Order Placed: {side.value} {order.size} {symbol} "
                         f"[{current_mode_enum.value}] Price={price or 'MKT'}"
                     )
+
+                    # Per-trade alert (Telegram)
+                    self._send_trade_alert(order, ref_price=bar.close)
 
             # 6. 주기적 통계 로그
             total_processed = sum(self._mode_counts.values())

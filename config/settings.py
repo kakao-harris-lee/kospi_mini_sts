@@ -83,6 +83,9 @@ class StrategyConfig:
     # 회피 구간
     liquidity_avoid_threshold: float = 50.0
 
+    # Strategy Manager trade alerts (Telegram)
+    trade_alerts_enabled: bool = os.getenv("STRATEGY_TRADE_ALERTS", "true").lower() == "true"
+
 
 @dataclass
 class IndexConfig:
