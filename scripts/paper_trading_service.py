@@ -211,7 +211,7 @@ class ProcessManager:
 
     def stop_all(self):
         """모든 프로세스 종료"""
-        for name in ["tick_collector", "feature_processor"]:
+        for name in ["tick_collector", "feature_processor", "prediction_engine"]:
             self.stop_process(name)
 
 
@@ -398,6 +398,10 @@ class PaperTradingService:
 
             if not self.process_manager.start_process("feature_processor", "src.processor.feature_processor"):
                 self.send_error_notification("feature_processor 시작 실패")
+                return
+
+            if not self.process_manager.start_process("prediction_engine", "src.prediction.prediction_engine"):
+                self.send_error_notification("prediction_engine 시작 실패")
                 return
 
             # 데이터 수집 대기
