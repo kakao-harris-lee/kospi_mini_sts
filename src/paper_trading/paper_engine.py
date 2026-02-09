@@ -97,6 +97,7 @@ class PaperTradingEngine:
         broker: VirtualBroker = None,
         redis_client=None,
         feature_stream: str = "FEATURE_STREAM",
+        prediction_stream: str = "PREDICTION_STREAM",
         run_id: str = None,
         kis_executor=None,
         symbol: str = "101F26",
@@ -105,7 +106,8 @@ class PaperTradingEngine:
         :param strategy: BaseStrategy 인스턴스
         :param broker: VirtualBroker 인스턴스 (없으면 기본값으로 생성)
         :param redis_client: Redis 클라이언트
-        :param feature_stream: 데이터 스트림 이름
+        :param feature_stream: 가격 업데이트용 스트림 이름
+        :param prediction_stream: DL 예측 결과 스트림 이름
         :param run_id: 실행 ID (DB 저장용)
         :param kis_executor: KISOrderExecutor 인스턴스 (실제 주문 시)
         :param symbol: 거래 종목코드
@@ -122,6 +124,7 @@ class PaperTradingEngine:
             broker.symbol = symbol
         self.redis = redis_client
         self.feature_stream = feature_stream
+        self.prediction_stream = prediction_stream
         self.run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.symbol = symbol
 
@@ -155,7 +158,7 @@ class PaperTradingEngine:
         self._last_heartbeat_time = 0.0
 
     async def _publish_heartbeats(self):
-        """Publish heartbeats for prediction_engine and strategy_manager."""
+        """Publish heartbeat for strategy_manager (paper engine acts as strategy manager)."""
         if not self.redis:
             return
 
@@ -164,14 +167,14 @@ class PaperTradingEngine:
             return
 
         try:
-            # Publish heartbeats for both services (paper trading acts as both)
-            for service in ["prediction_engine", "strategy_manager"]:
-                heartbeat_key = f"heartbeat:{service}"
-                await self.redis.set(heartbeat_key, str(now), ex=120)
+            # Paper engine acts as strategy_manager only;
+            # prediction_engine subprocess publishes its own heartbeat
+            heartbeat_key = "heartbeat:strategy_manager"
+            await self.redis.set(heartbeat_key, str(now), ex=120)
             self._last_heartbeat_time = now
-            logger.debug("Heartbeats published: prediction_engine, strategy_manager")
+            logger.debug("Heartbeat published: strategy_manager")
         except Exception as e:
-            logger.warning(f"Failed to publish heartbeats: {e}")
+            logger.warning(f"Failed to publish heartbeat: {e}")
 
     async def start(self, duration_seconds: int = None):
         """
@@ -212,39 +215,49 @@ class PaperTradingEngine:
         logger.info("Stop signal received")
 
     async def _run_loop(self):
-        """메인 실행 루프"""
+        """메인 실행 루프 (Feature + Prediction 듀얼 스트림)
+
+        FEATURE_STREAM: 가격 업데이트 (브로커 PnL 추적용)
+        PREDICTION_STREAM: DL 예측값 + 피처 → 전략 실행 → 주문
+        """
         if not self.redis:
-            # Redis 없으면 시뮬레이션 모드
             logger.warning("No Redis client - running in simulation mode")
             await self._simulation_loop()
             return
 
-        # Consumer Group 생성
         group_name = f"paper_{self.run_id}"
         consumer_name = f"consumer_{self.run_id}"
 
-        try:
-            await self.redis.xgroup_create(
-                self.feature_stream, group_name, mkstream=True, id="$"
-            )
-        except Exception:
-            pass  # 이미 존재
+        # 두 스트림 모두에 Consumer Group 생성
+        import redis.exceptions
+        for stream in [self.feature_stream, self.prediction_stream]:
+            try:
+                await self.redis.xgroup_create(
+                    stream, group_name, mkstream=True, id="$"
+                )
+            except redis.exceptions.ResponseError as e:
+                if "BUSYGROUP" not in str(e):
+                    raise
+            except Exception:
+                raise
 
-        logger.info(f"Listening to {self.feature_stream}...")
+        logger.info(
+            f"Listening to {self.feature_stream} + {self.prediction_stream}..."
+        )
 
-        # Publish initial heartbeat
         await self._publish_heartbeats()
 
         while self.is_running:
             try:
-                # Publish heartbeats periodically
                 await self._publish_heartbeats()
 
-                # 스트림에서 데이터 읽기
                 messages = await self.redis.xreadgroup(
                     groupname=group_name,
                     consumername=consumer_name,
-                    streams={self.feature_stream: ">"},
+                    streams={
+                        self.feature_stream: ">",
+                        self.prediction_stream: ">",
+                    },
                     count=10,
                     block=1000,
                 )
@@ -254,8 +267,13 @@ class PaperTradingEngine:
 
                 for stream_name, stream_messages in messages:
                     for msg_id, data in stream_messages:
-                        await self._process_message(data)
-                        await self.redis.xack(self.feature_stream, group_name, msg_id)
+                        if stream_name == self.prediction_stream:
+                            await self._process_prediction(data)
+                        else:
+                            await self._process_feature_update(data)
+                        await self.redis.xack(
+                            stream_name, group_name, msg_id
+                        )
 
             except Exception as e:
                 logger.error(f"Error in run loop: {e}")
@@ -282,7 +300,8 @@ class PaperTradingEngine:
             await asyncio.sleep(1)
 
     async def _process_message(self, data: Dict[str, Any]):
-        """메시지 처리"""
+        """시뮬레이션 모드 전용 메시지 처리 (가격 업데이트 + 시그널 생성 통합).
+        Redis 연결 없을 때 _simulation_loop()에서만 호출."""
         try:
             # 데이터 파싱
             bar_data = self._parse_bar_data(data)
@@ -310,6 +329,100 @@ class PaperTradingEngine:
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+
+    async def _process_feature_update(self, data: Dict[str, Any]):
+        """Feature 메시지 처리: 가격 업데이트만 (시그널 생성 없음)."""
+        try:
+            bar_data = self._parse_bar_data(data)
+            if not bar_data:
+                return
+
+            self.broker.update_price(
+                price=bar_data['close'],
+                bid=bar_data.get('bid'),
+                ask=bar_data.get('ask'),
+            )
+            self.bars_processed += 1
+
+            if self.bars_processed % 60 == 0:
+                self._record_equity()
+
+        except Exception as e:
+            logger.error(f"Error processing feature update: {e}")
+
+    async def _process_prediction(self, data: Dict[str, Any]):
+        """Prediction 메시지 처리: 피처 조회 + 예측값 주입 + 전략 실행."""
+        try:
+            symbol = data.get('symbol')
+            if not symbol:
+                logger.warning(f"Prediction message missing 'symbol' field. Keys: {list(data.keys())}")
+                return
+
+            raw_up = data.get('up_prob')
+            raw_down = data.get('down_prob')
+            if raw_up is None or raw_down is None:
+                logger.warning(
+                    f"Prediction missing probabilities: up_prob={raw_up}, down_prob={raw_down}. "
+                    f"Skipping for symbol={symbol}"
+                )
+                return
+
+            up_prob = float(raw_up)
+            down_prob = float(raw_down)
+
+            # Redis에서 최신 피처 조회
+            feature_data = await self._get_latest_feature(symbol)
+            if not feature_data:
+                logger.debug(f"No feature data for {symbol}, skipping prediction")
+                return
+
+            bar_data = self._parse_bar_data(feature_data)
+            if not bar_data:
+                return
+
+            # 예측 확률 주입
+            bar_data['up_prob'] = up_prob
+            bar_data['down_prob'] = down_prob
+
+            # Multi-horizon 확률 주입 (strategy_manager.py 패턴과 동일)
+            if 'up_prob_h10' in data:
+                bar_data['up_prob_h1'] = float(data.get('up_prob_h1', 0.5))
+                bar_data['up_prob_h3'] = float(data.get('up_prob_h3', 0.5))
+                bar_data['up_prob_h5'] = float(data.get('up_prob_h5', 0.5))
+                bar_data['up_prob_h10'] = float(data.get('up_prob_h10', 0.5))
+            else:
+                # Single model: h10을 메인 확률로 매핑
+                bar_data['up_prob_h10'] = up_prob
+
+            # 가격 업데이트
+            self.broker.update_price(
+                price=bar_data['close'],
+                bid=bar_data.get('bid'),
+                ask=bar_data.get('ask'),
+            )
+
+            # 전략 실행
+            signal = self.strategy.on_bar(bar_data)
+
+            if signal:
+                self.signals_generated += 1
+                await self._handle_signal(signal, bar_data)
+
+        except Exception as e:
+            logger.error(f"Error processing prediction: {e}")
+
+    async def _get_latest_feature(self, symbol: str) -> Optional[Dict]:
+        """Redis feature_window에서 최신 피처 조회."""
+        key = f"feature_window:{symbol}"
+        try:
+            data = await self.redis.get(key)
+            if data:
+                features = json.loads(data)
+                if features:
+                    return features[-1]
+        except Exception as e:
+            logger.error(f"Failed to get feature window: {e}")
+        return None
 
     def _parse_bar_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """스트림 데이터를 BarData 형식으로 파싱"""

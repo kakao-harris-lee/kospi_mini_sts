@@ -5,6 +5,7 @@ Coverage:
 - src/paper_trading/virtual_broker.py
 - src/paper_trading/paper_engine.py
 """
+import json
 import pytest
 import asyncio
 from datetime import datetime
@@ -557,3 +558,267 @@ class TestOrderEnums:
         assert PositionSide.LONG.value == "LONG"
         assert PositionSide.SHORT.value == "SHORT"
         assert PositionSide.FLAT.value == "FLAT"
+
+
+# =============================================================================
+# Dual-Stream Processing Tests
+# =============================================================================
+class TestProcessFeatureUpdate:
+    """_process_feature_update 메서드 테스트"""
+
+    @pytest.fixture
+    def engine(self):
+        from src.paper_trading.paper_engine import PaperTradingEngine
+        from src.paper_trading.virtual_broker import VirtualBroker
+
+        strategy = MagicMock()
+        strategy.__class__.__name__ = "MockStrategy"
+        strategy.on_bar.return_value = None
+
+        broker = VirtualBroker(initial_capital=10_000_000)
+        return PaperTradingEngine(
+            strategy=strategy,
+            broker=broker,
+            redis_client=None,
+            run_id="test_feat_update",
+        )
+
+    @pytest.mark.asyncio
+    async def test_updates_broker_price(self, engine):
+        """Feature 업데이트가 브로커 가격을 갱신하는지 확인"""
+        data = {
+            "timestamp": "2025-01-15T10:00:00",
+            "code": "101M25",
+            "close": "350.0",
+            "bid": "349.95",
+            "ask": "350.05",
+            "volume": "100",
+        }
+        await engine._process_feature_update(data)
+
+        assert engine.broker._current_price == 350.0
+        assert engine.bars_processed == 1
+
+    @pytest.mark.asyncio
+    async def test_does_not_call_strategy(self, engine):
+        """Feature 업데이트가 전략을 호출하지 않는지 확인"""
+        data = {
+            "timestamp": "2025-01-15T10:00:00",
+            "code": "101M25",
+            "close": "350.0",
+            "volume": "100",
+        }
+        await engine._process_feature_update(data)
+
+        engine.strategy.on_bar.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_records_equity_periodically(self, engine):
+        """60번째 바에서 equity를 기록하는지 확인"""
+        data = {
+            "timestamp": "2025-01-15T10:00:00",
+            "code": "101M25",
+            "close": "350.0",
+            "volume": "100",
+        }
+        engine.bars_processed = 59  # Next will be 60
+        await engine._process_feature_update(data)
+
+        assert len(engine.equity_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_handles_bad_data(self, engine):
+        """잘못된 데이터를 안전하게 처리하는지 확인 (crash 없이 진행)"""
+        await engine._process_feature_update({})
+        # _parse_bar_data returns defaults for missing fields, so bar still counts
+        assert engine.bars_processed == 1
+
+
+class TestProcessPrediction:
+    """_process_prediction 메서드 테스트"""
+
+    @pytest.fixture
+    def engine(self):
+        from src.paper_trading.paper_engine import PaperTradingEngine
+        from src.paper_trading.virtual_broker import VirtualBroker
+
+        strategy = MagicMock()
+        strategy.__class__.__name__ = "MockStrategy"
+        strategy.on_bar.return_value = None
+
+        broker = VirtualBroker(initial_capital=10_000_000)
+        mock_redis = AsyncMock()
+        return PaperTradingEngine(
+            strategy=strategy,
+            broker=broker,
+            redis_client=mock_redis,
+            run_id="test_pred",
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_missing_symbol(self, engine):
+        """symbol 필드 없는 메시지를 건너뛰는지 확인"""
+        await engine._process_prediction({"up_prob": "0.8", "down_prob": "0.2"})
+        engine.strategy.on_bar.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_missing_probabilities(self, engine):
+        """up_prob/down_prob 없는 메시지를 건너뛰는지 확인"""
+        await engine._process_prediction({"symbol": "101F26"})
+        engine.strategy.on_bar.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_calls_strategy_with_predictions(self, engine):
+        """예측값을 주입하여 전략을 호출하는지 확인"""
+        feature_data = json.dumps([{
+            "timestamp": "2025-01-15T10:00:00",
+            "code": "101F26",
+            "close": "350.0",
+            "bid": "349.95",
+            "ask": "350.05",
+            "volume": "100",
+        }])
+        engine.redis.get = AsyncMock(return_value=feature_data)
+
+        data = {
+            "symbol": "101F26",
+            "up_prob": "0.8",
+            "down_prob": "0.2",
+        }
+        await engine._process_prediction(data)
+
+        engine.strategy.on_bar.assert_called_once()
+        bar_data = engine.strategy.on_bar.call_args[0][0]
+        assert bar_data['up_prob'] == 0.8
+        assert bar_data['down_prob'] == 0.2
+
+    @pytest.mark.asyncio
+    async def test_injects_multi_horizon_probabilities(self, engine):
+        """Multi-horizon 확률을 주입하는지 확인"""
+        feature_data = json.dumps([{
+            "timestamp": "2025-01-15T10:00:00",
+            "code": "101F26",
+            "close": "350.0",
+            "volume": "100",
+        }])
+        engine.redis.get = AsyncMock(return_value=feature_data)
+
+        data = {
+            "symbol": "101F26",
+            "up_prob": "0.8",
+            "down_prob": "0.2",
+            "up_prob_h1": "0.75",
+            "up_prob_h3": "0.78",
+            "up_prob_h5": "0.82",
+            "up_prob_h10": "0.85",
+        }
+        await engine._process_prediction(data)
+
+        bar_data = engine.strategy.on_bar.call_args[0][0]
+        assert bar_data['up_prob_h1'] == 0.75
+        assert bar_data['up_prob_h3'] == 0.78
+        assert bar_data['up_prob_h5'] == 0.82
+        assert bar_data['up_prob_h10'] == 0.85
+
+    @pytest.mark.asyncio
+    async def test_single_model_maps_h10(self, engine):
+        """Single model일 때 h10을 메인 확률로 매핑하는지 확인"""
+        feature_data = json.dumps([{
+            "timestamp": "2025-01-15T10:00:00",
+            "code": "101F26",
+            "close": "350.0",
+            "volume": "100",
+        }])
+        engine.redis.get = AsyncMock(return_value=feature_data)
+
+        data = {
+            "symbol": "101F26",
+            "up_prob": "0.9",
+            "down_prob": "0.1",
+        }
+        await engine._process_prediction(data)
+
+        bar_data = engine.strategy.on_bar.call_args[0][0]
+        assert bar_data['up_prob_h10'] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_feature_data(self, engine):
+        """Redis에 피처 데이터가 없으면 건너뛰는지 확인"""
+        engine.redis.get = AsyncMock(return_value=None)
+
+        data = {
+            "symbol": "101F26",
+            "up_prob": "0.8",
+            "down_prob": "0.2",
+        }
+        await engine._process_prediction(data)
+
+        engine.strategy.on_bar.assert_not_called()
+
+
+class TestGetLatestFeature:
+    """_get_latest_feature 메서드 테스트"""
+
+    @pytest.fixture
+    def engine(self):
+        from src.paper_trading.paper_engine import PaperTradingEngine
+        from src.paper_trading.virtual_broker import VirtualBroker
+
+        strategy = MagicMock()
+        strategy.__class__.__name__ = "MockStrategy"
+
+        broker = VirtualBroker(initial_capital=10_000_000)
+        mock_redis = AsyncMock()
+        return PaperTradingEngine(
+            strategy=strategy,
+            broker=broker,
+            redis_client=mock_redis,
+            run_id="test_feat",
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_last_feature(self, engine):
+        """feature_window에서 마지막 요소를 반환하는지 확인"""
+        features = [
+            {"close": "349.0", "code": "101F26"},
+            {"close": "350.0", "code": "101F26"},
+        ]
+        engine.redis.get = AsyncMock(return_value=json.dumps(features))
+
+        result = await engine._get_latest_feature("101F26")
+
+        assert result is not None
+        assert result["close"] == "350.0"
+        engine.redis.get.assert_called_once_with("feature_window:101F26")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_key_missing(self, engine):
+        """키가 없으면 None을 반환하는지 확인"""
+        engine.redis.get = AsyncMock(return_value=None)
+
+        result = await engine._get_latest_feature("101F26")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_empty_list(self, engine):
+        """빈 리스트이면 None을 반환하는지 확인"""
+        engine.redis.get = AsyncMock(return_value=json.dumps([]))
+
+        result = await engine._get_latest_feature("101F26")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_handles_json_error(self, engine):
+        """JSON 파싱 에러를 처리하는지 확인"""
+        engine.redis.get = AsyncMock(return_value="not-valid-json{{{")
+
+        result = await engine._get_latest_feature("101F26")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_handles_redis_error(self, engine):
+        """Redis 에러를 처리하는지 확인"""
+        engine.redis.get = AsyncMock(side_effect=Exception("Connection lost"))
+
+        result = await engine._get_latest_feature("101F26")
+        assert result is None
