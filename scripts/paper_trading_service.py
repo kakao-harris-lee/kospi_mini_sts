@@ -444,9 +444,10 @@ class PaperTradingService:
         if self.use_kis_api:
             try:
                 from config.settings import settings
+                f_key, f_secret = settings.kis.get_keys("futures")
                 kis_config = KISOrderConfig(
-                    app_key=settings.kis.app_key,
-                    app_secret=settings.kis.app_secret,
+                    app_key=f_key,
+                    app_secret=f_secret,
                     account_no=settings.kis.account_no,
                     is_mock=settings.kis.is_mock,
                 )
