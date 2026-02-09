@@ -760,7 +760,7 @@ async def run_paper_trading(
     engine.print_summary()
 
     if redis_client:
-        await redis_client.close()
+        await redis_client.aclose()
 
     return engine.get_result()
 

@@ -537,7 +537,7 @@ class PaperTradingService:
             self.today_result = self.engine.get_result() if self.engine else {}
 
             if redis_client:
-                await redis_client.close()
+                await redis_client.aclose()
 
     def stop_trading(self):
         """Paper Trading 종료"""
