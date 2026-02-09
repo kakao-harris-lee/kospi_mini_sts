@@ -158,7 +158,7 @@ class PaperTradingEngine:
         self._last_heartbeat_time = 0.0
 
     async def _publish_heartbeats(self):
-        """Publish heartbeats for prediction_engine and strategy_manager."""
+        """Publish heartbeat for strategy_manager (paper engine acts as strategy manager)."""
         if not self.redis:
             return
 
@@ -167,14 +167,14 @@ class PaperTradingEngine:
             return
 
         try:
-            # Publish heartbeats for both services (paper trading acts as both)
-            for service in ["prediction_engine", "strategy_manager"]:
-                heartbeat_key = f"heartbeat:{service}"
-                await self.redis.set(heartbeat_key, str(now), ex=120)
+            # Paper engine acts as strategy_manager only;
+            # prediction_engine subprocess publishes its own heartbeat
+            heartbeat_key = "heartbeat:strategy_manager"
+            await self.redis.set(heartbeat_key, str(now), ex=120)
             self._last_heartbeat_time = now
-            logger.debug("Heartbeats published: prediction_engine, strategy_manager")
+            logger.debug("Heartbeat published: strategy_manager")
         except Exception as e:
-            logger.warning(f"Failed to publish heartbeats: {e}")
+            logger.warning(f"Failed to publish heartbeat: {e}")
 
     async def start(self, duration_seconds: int = None):
         """
@@ -229,13 +229,17 @@ class PaperTradingEngine:
         consumer_name = f"consumer_{self.run_id}"
 
         # 두 스트림 모두에 Consumer Group 생성
+        import redis.exceptions
         for stream in [self.feature_stream, self.prediction_stream]:
             try:
                 await self.redis.xgroup_create(
                     stream, group_name, mkstream=True, id="$"
                 )
+            except redis.exceptions.ResponseError as e:
+                if "BUSYGROUP" not in str(e):
+                    raise
             except Exception:
-                pass  # 이미 존재
+                raise
 
         logger.info(
             f"Listening to {self.feature_stream} + {self.prediction_stream}..."
@@ -296,7 +300,8 @@ class PaperTradingEngine:
             await asyncio.sleep(1)
 
     async def _process_message(self, data: Dict[str, Any]):
-        """메시지 처리"""
+        """시뮬레이션 모드 전용 메시지 처리 (가격 업데이트 + 시그널 생성 통합).
+        Redis 연결 없을 때 _simulation_loop()에서만 호출."""
         try:
             # 데이터 파싱
             bar_data = self._parse_bar_data(data)
@@ -350,10 +355,20 @@ class PaperTradingEngine:
         try:
             symbol = data.get('symbol')
             if not symbol:
+                logger.warning(f"Prediction message missing 'symbol' field. Keys: {list(data.keys())}")
                 return
 
-            up_prob = float(data.get('up_prob', 0.5))
-            down_prob = float(data.get('down_prob', 0.5))
+            raw_up = data.get('up_prob')
+            raw_down = data.get('down_prob')
+            if raw_up is None or raw_down is None:
+                logger.warning(
+                    f"Prediction missing probabilities: up_prob={raw_up}, down_prob={raw_down}. "
+                    f"Skipping for symbol={symbol}"
+                )
+                return
+
+            up_prob = float(raw_up)
+            down_prob = float(raw_down)
 
             # Redis에서 최신 피처 조회
             feature_data = await self._get_latest_feature(symbol)
@@ -368,6 +383,16 @@ class PaperTradingEngine:
             # 예측 확률 주입
             bar_data['up_prob'] = up_prob
             bar_data['down_prob'] = down_prob
+
+            # Multi-horizon 확률 주입 (strategy_manager.py 패턴과 동일)
+            if 'up_prob_h10' in data:
+                bar_data['up_prob_h1'] = float(data.get('up_prob_h1', 0.5))
+                bar_data['up_prob_h3'] = float(data.get('up_prob_h3', 0.5))
+                bar_data['up_prob_h5'] = float(data.get('up_prob_h5', 0.5))
+                bar_data['up_prob_h10'] = float(data.get('up_prob_h10', 0.5))
+            else:
+                # Single model: h10을 메인 확률로 매핑
+                bar_data['up_prob_h10'] = up_prob
 
             # 가격 업데이트
             self.broker.update_price(
