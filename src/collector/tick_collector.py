@@ -378,13 +378,13 @@ def main():
     from dotenv import load_dotenv
     load_dotenv()
 
-    # 환경변수에서 설정 로드
-    app_key = os.getenv("KIS_APP_KEY", "")
-    app_secret = os.getenv("KIS_APP_SECRET", "")
+    # 환경변수에서 설정 로드 (futures 도메인 키 사용)
+    from config.settings import settings
+    app_key, app_secret = settings.kis.get_keys("futures")
     market_str = os.getenv("KIS_MARKET", "real")
 
     if not app_key or not app_secret:
-        logger.error("KIS_APP_KEY and KIS_APP_SECRET must be set")
+        logger.error("KIS_FUTURES_APP_KEY (or KIS_APP_KEY) and secret must be set")
         sys.exit(1)
 
     # 수집할 심볼 목록 결정

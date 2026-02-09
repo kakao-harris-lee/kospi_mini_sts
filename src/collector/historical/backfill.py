@@ -34,111 +34,13 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# KIS API Token Management
+# KIS API Token Management (futures domain)
 # =============================================================================
 
-class KISToken:
-    """한국투자증권 API 토큰 관리"""
+from common.kis_token import KISToken, get_kis_token
 
-    _instance = None
-    _token: Optional[str] = None
-    _expires_at: float = 0
-    _cache_path: Optional[str] = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._cache_path = os.path.expanduser("~/.cache/kis_token.json")
-            cls._instance._load_cache()
-        return cls._instance
-
-    def get(self) -> str:
-        """현재 유효한 토큰 반환 (필요시 갱신)"""
-        import time
-
-        if self._token and time.time() < self._expires_at - 60:
-            return self._token
-
-        self._refresh()
-        return self._token
-
-    def _load_cache(self) -> None:
-        """Load cached token if present and valid."""
-        import json
-        try:
-            if not self._cache_path or not os.path.exists(self._cache_path):
-                return
-            with open(self._cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            token = data.get("access_token")
-            expires_at = data.get("expires_at", 0)
-            if token and expires_at:
-                self._token = token
-                self._expires_at = float(expires_at)
-        except Exception:
-            return
-
-    def _save_cache(self) -> None:
-        """Persist token to cache for reuse across runs."""
-        import json
-        if not self._cache_path or not self._token:
-            return
-        os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
-        payload = {"access_token": self._token, "expires_at": self._expires_at}
-        try:
-            with open(self._cache_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-        except Exception:
-            return
-
-    def _refresh(self):
-        """토큰 갱신"""
-        import requests
-        import time
-
-        url = f"{settings.kis.app_key and 'https://openapi.koreainvestment.com:9443' or 'https://openapivts.koreainvestment.com:29443'}/oauth2/tokenP"
-
-        app_key = settings.kis.app_key or os.getenv("KIS_APP_KEY", "")
-        app_secret = settings.kis.app_secret or os.getenv("KIS_APP_SECRET", "")
-
-        if not app_key or not app_secret:
-            raise ValueError("KIS_APP_KEY and KIS_APP_SECRET must be set")
-
-        payload = {
-            "grant_type": "client_credentials",
-            "appkey": app_key,
-            "appsecret": app_secret,
-        }
-
-        resp = requests.post(url, json=payload, timeout=30)
-        data = resp.json()
-
-        if "access_token" not in data:
-            raise ValueError(f"Token refresh failed: {data}")
-
-        self._token = data["access_token"]
-        expires_in = int(data.get("expires_in", 86400))
-        self._expires_at = time.time() + expires_in
-        self._save_cache()
-
-        logger.info(f"[KISToken] Token refreshed, expires in {expires_in}s")
-
-    def is_token_valid(self) -> bool:
-        """Check if current token is valid."""
-        import time
-        return bool(self._token and time.time() < self._expires_at - 60)
-
-    def refresh_token(self) -> bool:
-        """Refresh the token. Returns True on success."""
-        try:
-            self._refresh()
-            return True
-        except Exception as e:
-            logger.warning(f"[KISToken] Token refresh failed: {e}")
-            return False
-
-
-_token = KISToken()
+# Backfill은 선물 데이터 수집 → futures 도메인 키 사용
+_token = get_kis_token(domain="futures")
 
 
 # =============================================================================
@@ -203,8 +105,7 @@ async def fetch_minute_async(
     Returns:
         Tuple of (code, date, response_data)
     """
-    app_key = settings.kis.app_key or os.getenv("KIS_APP_KEY", "")
-    app_secret = settings.kis.app_secret or os.getenv("KIS_APP_SECRET", "")
+    app_key, app_secret = settings.kis.get_keys("futures")
     base_url = "https://openapi.koreainvestment.com:9443"
 
     url = f"{base_url}/uapi/domestic-futureoption/v1/quotations/inquire-time-fuopchartprice"
@@ -271,8 +172,7 @@ async def fetch_index_minute_async(
     """
     Fetch KOSPI200 index minute data asynchronously.
     """
-    app_key = settings.kis.app_key or os.getenv("KIS_APP_KEY", "")
-    app_secret = settings.kis.app_secret or os.getenv("KIS_APP_SECRET", "")
+    app_key, app_secret = settings.kis.get_keys("futures")
     base_url = "https://openapi.koreainvestment.com:9443"
 
     url = os.getenv(

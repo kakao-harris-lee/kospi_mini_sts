@@ -446,9 +446,11 @@ def create_kis_adapter_from_env() -> KISWebSocketAdapter:
 
     load_dotenv()
 
+    from config.settings import settings
+    f_key, f_secret = settings.kis.get_keys("futures")
     config = KISConfig(
-        app_key=os.getenv("KIS_APP_KEY", ""),
-        app_secret=os.getenv("KIS_APP_SECRET", ""),
+        app_key=f_key,
+        app_secret=f_secret,
         market=KISMarket.REAL if os.getenv("KIS_MARKET", "real") == "real" else KISMarket.MOCK
     )
 

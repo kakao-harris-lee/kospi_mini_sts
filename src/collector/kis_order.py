@@ -413,9 +413,11 @@ def create_order_api_from_env() -> KISOrderAPI:
     from dotenv import load_dotenv
     load_dotenv()
 
+    from config.settings import settings
+    f_key, f_secret = settings.kis.get_keys("futures")
     config = KISOrderConfig(
-        app_key=os.getenv("KIS_APP_KEY", ""),
-        app_secret=os.getenv("KIS_APP_SECRET", ""),
+        app_key=f_key,
+        app_secret=f_secret,
         account_no=os.getenv("KIS_ACCOUNT_NO", ""),
         is_mock=os.getenv("KIS_MARKET", "real") == "mock"
     )

@@ -30,6 +30,23 @@ class KISConfig:
     account_no: str = os.getenv("KIS_ACCOUNT_NO", "")
     is_mock: bool = os.getenv("KIS_MARKET", "real") == "mock"
 
+    # 선물 전용 앱키 (별도 rate limit 예산)
+    futures_app_key: str = os.getenv("KIS_FUTURES_APP_KEY", "")
+    futures_app_secret: str = os.getenv("KIS_FUTURES_APP_SECRET", "")
+
+    def get_keys(self, domain: str = "stock") -> tuple:
+        """도메인별 앱키/시크릿 반환.
+
+        Args:
+            domain: "stock" or "futures"
+
+        Returns:
+            (app_key, app_secret) tuple
+        """
+        if domain == "futures" and self.futures_app_key:
+            return self.futures_app_key, self.futures_app_secret
+        return self.app_key, self.app_secret
+
 
 @dataclass
 class RedisConfig:

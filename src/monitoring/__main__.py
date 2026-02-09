@@ -119,8 +119,8 @@ async def _run_service(
     # Initialize KIS Token Manager
     kis_token_manager = None
     try:
-        from src.collector.historical.backfill import KISToken
-        kis_token_manager = KISToken()
+        from common.kis_token import get_kis_token
+        kis_token_manager = get_kis_token(domain="futures")
         # Try to get a valid token to verify configuration
         kis_token_manager.get()
         logger.info("KIS Token Manager initialized")

@@ -100,15 +100,15 @@ class RealtimeTest:
         print("  KOSPI Mini 실시간 데이터 수신 테스트")
         print("=" * 60)
 
-        # API 키 확인
-        app_key = os.getenv("KIS_APP_KEY", "")
-        app_secret = os.getenv("KIS_APP_SECRET", "")
+        # API 키 확인 (futures 도메인 키 사용)
+        from config.settings import settings
+        app_key, app_secret = settings.kis.get_keys("futures")
 
         if not app_key or not app_secret:
-            print("\n[ERROR] KIS_APP_KEY, KIS_APP_SECRET 환경변수를 설정하세요.")
+            print("\n[ERROR] KIS_FUTURES_APP_KEY (or KIS_APP_KEY) 환경변수를 설정하세요.")
             print("  .env 파일에 다음을 추가:")
-            print("    KIS_APP_KEY=your_app_key")
-            print("    KIS_APP_SECRET=your_app_secret")
+            print("    KIS_FUTURES_APP_KEY=your_futures_app_key")
+            print("    KIS_FUTURES_APP_SECRET=your_futures_app_secret")
             return False
 
         print(f"\n[1] 설정 확인")
