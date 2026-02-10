@@ -72,14 +72,14 @@ _rate_limiter: Optional[RateLimiter] = None
 def _get_semaphore() -> asyncio.Semaphore:
     global _semaphore
     if _semaphore is None:
-        _semaphore = asyncio.Semaphore(10)
+        _semaphore = asyncio.Semaphore(3)
     return _semaphore
 
 
 def _get_rate_limiter() -> RateLimiter:
     global _rate_limiter
     if _rate_limiter is None:
-        _rate_limiter = RateLimiter(20)
+        _rate_limiter = RateLimiter(3)
     return _rate_limiter
 
 
@@ -91,16 +91,18 @@ async def fetch_minute_async(
     client: httpx.AsyncClient,
     code: str,
     date_str: str,
-    max_retries: int = 3
+    max_retries: int = 3,
+    hour: str = "",
 ) -> Tuple[str, str, dict]:
     """
-    Fetch minute data asynchronously with rate limiting and retry.
+    Fetch one page of minute data with rate limiting and retry.
 
     Args:
         client: httpx async client
         code: Futures code (e.g., 'A05601')
         date_str: Date string in YYYYMMDD format
         max_retries: Maximum retry attempts
+        hour: Pagination cursor (HHMMSS). Empty string for first page.
 
     Returns:
         Tuple of (code, date, response_data)
@@ -116,7 +118,7 @@ async def fetch_minute_async(
         "FID_PW_DATA_INCU_YN": "Y",
         "FID_FAKE_TICK_INCU_YN": "N",
         "FID_INPUT_DATE_1": date_str,
-        "FID_INPUT_HOUR_1": "",
+        "FID_INPUT_HOUR_1": hour,
     }
 
     last_error = None
@@ -144,6 +146,13 @@ async def fetch_minute_async(
 
                 if data.get("rt_cd") != "0":
                     msg = data.get("msg1", "Unknown error")
+                    if "초당" in msg or "거래건수" in msg:
+                        last_error = msg
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 1.5
+                            logger.warning(f"Rate limit for {code} {date_str}, retry {attempt + 1}/{max_retries} in {wait_time}s")
+                            await asyncio.sleep(wait_time)
+                        continue
                     return (code, date_str, {"error": msg})
 
                 return (code, date_str, data)
@@ -163,14 +172,102 @@ async def fetch_minute_async(
     return (code, date_str, {"error": str(last_error)})
 
 
+def _extract_earliest_time(output: List[dict]) -> Optional[str]:
+    """Extract earliest time minus 1 second from API output for pagination cursor.
+
+    Subtracts 1 second from the earliest time to avoid re-fetching the
+    boundary record in the next page.
+    """
+    time_keys = ["stck_cntg_hour", "futs_cntg_hour", "cntg_hour", "bsop_hour", "hour"]
+    earliest = None
+    for item in output:
+        t = _first_present(item, time_keys, "")
+        if t:
+            if len(t) == 4:
+                t = f"{t}00"
+            if earliest is None or t < earliest:
+                earliest = t
+    if not earliest:
+        return None
+    # Subtract 1 second to avoid overlap
+    try:
+        dt = datetime.strptime(earliest, "%H%M%S") - timedelta(seconds=1)
+        return dt.strftime("%H%M%S")
+    except ValueError:
+        return earliest
+
+
+async def fetch_all_minutes_for_day(
+    client: httpx.AsyncClient,
+    code: str,
+    date_str: str,
+    max_pages: int = 200,
+) -> Tuple[str, str, dict]:
+    """
+    Fetch ALL minute bars for a code+date with automatic pagination.
+
+    KIS API returns ~100 records per page. For recent dates, data is at
+    second-level granularity (~2-3 min per page for liquid contracts),
+    requiring many pages to cover the full trading day.
+
+    Args:
+        client: httpx async client
+        code: Futures code (e.g., 'A05601')
+        date_str: Date string in YYYYMMDD format
+        max_pages: Safety cap on number of pages
+
+    Returns:
+        Tuple of (code, date_str, combined_response_data)
+    """
+    all_output = []
+    next_hour = ""
+    prev_hour = None
+
+    for page in range(max_pages):
+        _, _, data = await fetch_minute_async(client, code, date_str, max_retries=8, hour=next_hour)
+
+        if "error" in data:
+            if page == 0:
+                return (code, date_str, data)
+            break
+
+        output = data.get("output2", []) or data.get("output1", []) or data.get("output", [])
+        if not output:
+            break
+
+        all_output.extend(output)
+
+        if len(output) < 100:
+            break
+
+        earliest = _extract_earliest_time(output)
+        if not earliest:
+            break
+
+        if earliest == prev_hour:
+            break
+
+        prev_hour = earliest
+        next_hour = earliest
+
+        if page > 0 and page % 3 == 0:
+            await asyncio.sleep(1.0)
+
+    if all_output:
+        logger.debug(f"Fetched {len(all_output)} bars for {code} {date_str} ({page + 1} pages)")
+
+    return (code, date_str, {"output2": all_output, "rt_cd": "0"})
+
+
 async def fetch_index_minute_async(
     client: httpx.AsyncClient,
     index_symbol: str,
     date_str: str,
     max_retries: int = 3,
+    hour: str = "",
 ) -> Tuple[str, str, dict]:
     """
-    Fetch KOSPI200 index minute data asynchronously.
+    Fetch one page of KOSPI200 index minute data asynchronously.
     """
     app_key, app_secret = settings.kis.get_keys("futures")
     base_url = "https://openapi.koreainvestment.com:9443"
@@ -185,7 +282,7 @@ async def fetch_index_minute_async(
         "FID_COND_MRKT_DIV_CODE": os.getenv("KIS_INDEX_COND_MRKT_DIV_CODE", "U"),
         "FID_INPUT_ISCD": index_symbol,
         "FID_INPUT_DATE_1": date_str,
-        "FID_INPUT_HOUR_1": "",
+        "FID_INPUT_HOUR_1": hour,
         "FID_HOUR_CLS_CODE": os.getenv("KIS_INDEX_HOUR_CLS_CODE", "1"),
         "FID_PW_DATA_INCU_YN": "Y",
         "FID_FAKE_TICK_INCU_YN": os.getenv("KIS_INDEX_FAKE_TICK_INCU_YN", "N"),
@@ -216,6 +313,13 @@ async def fetch_index_minute_async(
 
                 if data.get("rt_cd") != "0":
                     msg = data.get("msg1", "Unknown error")
+                    if "초당" in msg or "거래건수" in msg:
+                        last_error = msg
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 1.5
+                            logger.warning(f"Rate limit for {index_symbol} {date_str}, retry {attempt + 1}/{max_retries} in {wait_time}s")
+                            await asyncio.sleep(wait_time)
+                        continue
                     return (index_symbol, date_str, {"error": msg})
 
                 return (index_symbol, date_str, data)
@@ -235,6 +339,52 @@ async def fetch_index_minute_async(
     return (index_symbol, date_str, {"error": str(last_error)})
 
 
+async def fetch_all_index_minutes_for_day(
+    client: httpx.AsyncClient,
+    index_symbol: str,
+    date_str: str,
+    max_pages: int = 200,
+) -> Tuple[str, str, dict]:
+    """Fetch ALL index minute bars for a symbol+date with automatic pagination."""
+    all_output = []
+    next_hour = ""
+    prev_hour = None
+
+    for page in range(max_pages):
+        _, _, data = await fetch_index_minute_async(client, index_symbol, date_str, max_retries=8, hour=next_hour)
+
+        if "error" in data:
+            if page == 0:
+                return (index_symbol, date_str, data)
+            break
+
+        output = data.get("output2", []) or data.get("output1", []) or data.get("output", [])
+        if not output:
+            break
+
+        all_output.extend(output)
+
+        if len(output) < 100:
+            break
+
+        earliest = _extract_earliest_time(output)
+        if not earliest:
+            break
+
+        if earliest == prev_hour:
+            break
+
+        prev_hour = earliest
+        next_hour = earliest
+
+        if page > 0 and page % 3 == 0:
+            await asyncio.sleep(1.0)
+
+    if all_output:
+        logger.debug(f"Fetched {len(all_output)} index bars for {index_symbol} {date_str} ({page + 1} pages)")
+
+    return (index_symbol, date_str, {"output2": all_output, "rt_cd": "0"})
+
 
 def _first_present(item: Dict[str, Any], keys: List[str], default: Any = None) -> Any:
     """Get first present value from dict."""
@@ -247,7 +397,10 @@ def _first_present(item: Dict[str, Any], keys: List[str], default: Any = None) -
 
 def parse_ohlcv(code: str, date_str: str, data: dict) -> List[Tuple]:
     """
-    Parse API response to OHLCV rows.
+    Parse API response to OHLCV rows, aggregating to 1-minute bars.
+
+    The KIS API may return second-level data for recent dates.
+    This function aggregates sub-minute records into proper 1-minute OHLCV bars.
 
     Args:
         code: Futures code
@@ -257,13 +410,18 @@ def parse_ohlcv(code: str, date_str: str, data: dict) -> List[Tuple]:
     Returns:
         List of tuples (code, datetime, open, high, low, close, volume)
     """
-    rows = []
     output = data.get("output2", []) or data.get("output1", []) or data.get("output", [])
 
     if not output:
-        return rows
+        return []
+
+    # Collect raw records keyed by minute
+    # Each entry: (second_timestamp, open, high, low, close, volume)
+    minute_records: Dict[datetime, List[Tuple]] = {}
 
     for item in output:
+        if not isinstance(item, dict):
+            continue
         try:
             time_str = _first_present(
                 item,
@@ -277,36 +435,47 @@ def parse_ohlcv(code: str, date_str: str, data: dict) -> List[Tuple]:
                 time_str = f"{time_str}00"
 
             dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
+            # Truncate to minute
+            dt_minute = dt.replace(second=0)
 
-            o = _first_present(
+            o = float(_first_present(
                 item,
                 ["futs_oprc", "open", "stck_oprc", "bstp_nmix_oprc", "oprc"],
                 0,
-            )
-            h = _first_present(
+            ) or 0)
+            h = float(_first_present(
                 item,
                 ["futs_hgpr", "high", "stck_hgpr", "bstp_nmix_hgpr", "hgpr"],
                 0,
-            )
-            l = _first_present(
+            ) or 0)
+            l = float(_first_present(
                 item,
                 ["futs_lwpr", "low", "stck_lwpr", "bstp_nmix_lwpr", "lwpr"],
                 0,
-            )
-            c = _first_present(
+            ) or 0)
+            c = float(_first_present(
                 item,
                 ["futs_prpr", "close", "stck_prpr", "stck_clpr", "bstp_nmix_prpr", "prpr"],
                 0,
-            )
-            v = _first_present(item, ["cntg_vol", "acml_vol", "volume"], 0)
+            ) or 0)
+            v = int(_first_present(item, ["cntg_vol", "acml_vol", "volume"], 0) or 0)
 
-            rows.append((
-                code, dt,
-                float(o or 0), float(h or 0), float(l or 0), float(c or 0),
-                int(v or 0),
-            ))
+            if dt_minute not in minute_records:
+                minute_records[dt_minute] = []
+            minute_records[dt_minute].append((dt, o, h, l, c, v))
         except (ValueError, TypeError):
             continue
+
+    # Aggregate each minute's records into a single OHLCV bar
+    rows = []
+    for dt_minute in sorted(minute_records.keys()):
+        records = sorted(minute_records[dt_minute], key=lambda r: r[0])
+        bar_open = records[0][1]
+        bar_high = max(r[2] for r in records)
+        bar_low = min(r[3] for r in records if r[3] > 0) if any(r[3] > 0 for r in records) else 0.0
+        bar_close = records[-1][4]
+        bar_volume = sum(r[5] for r in records)
+        rows.append((code, dt_minute, bar_open, bar_high, bar_low, bar_close, bar_volume))
 
     return rows
 
@@ -386,15 +555,22 @@ def get_collected_pairs_in_range(
     start: date,
     end: date,
     table_name: str = "kospi_mini_1m",
+    min_bars: int = 200,
 ) -> Set[Tuple[str, date]]:
-    """Get collected (code, date) pairs for a date range."""
+    """Get collected (code, date) pairs that have sufficient data.
+
+    Only considers a pair as collected if it has at least min_bars records,
+    preventing incomplete single-page fetches from blocking re-collection.
+    """
     result = client.query(
         f"""
-        SELECT DISTINCT code, toDate(datetime) as dt
+        SELECT code, toDate(datetime) as dt, count() as cnt
         FROM {table_name}
         WHERE dt >= %(start)s AND dt <= %(end)s
+        GROUP BY code, dt
+        HAVING cnt >= %(min_bars)s
         """,
-        parameters={"start": start, "end": end},
+        parameters={"start": start, "end": end, "min_bars": min_bars},
     )
     return {(row[0], row[1]) for row in result.result_rows}
 
@@ -418,15 +594,12 @@ async def collect_batch(
     if not tasks:
         return 0
 
-    coros = [
-        fetch_minute_async(client, code, dt.strftime("%Y%m%d"))
-        for code, dt in tasks
-    ]
-
-    results = await asyncio.gather(*coros)
-
     all_rows = []
-    for code, date_str, data in results:
+    for i, (code, dt) in enumerate(tasks):
+        date_str = dt.strftime("%Y%m%d")
+        if i > 0:
+            await asyncio.sleep(5.0)
+        _, _, data = await fetch_all_minutes_for_day(client, code, date_str)
         if "error" in data:
             logger.warning(f"Fetch failed for {code} {date_str}: {data['error']}")
             continue
@@ -452,15 +625,12 @@ async def collect_index_batch(
     if not tasks:
         return 0
 
-    coros = [
-        fetch_index_minute_async(client, symbol, dt.strftime("%Y%m%d"))
-        for symbol, dt in tasks
-    ]
-
-    results = await asyncio.gather(*coros)
-
     all_rows = []
-    for symbol, date_str, data in results:
+    for i, (symbol, dt) in enumerate(tasks):
+        date_str = dt.strftime("%Y%m%d")
+        if i > 0:
+            await asyncio.sleep(5.0)
+        _, _, data = await fetch_all_index_minutes_for_day(client, symbol, date_str)
         if "error" in data:
             logger.warning(f"Index fetch failed for {symbol} {date_str}: {data['error']}")
             continue
